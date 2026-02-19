@@ -22,6 +22,11 @@ struct ImageStore {
         return UIImage(data: data)
     }
 
+    func loadImageData(filename: String) -> Data? {
+        let fileURL = imageDirectoryURLWithoutCreation().appendingPathComponent(filename)
+        return try? Data(contentsOf: fileURL)
+    }
+
     private func imageDirectoryURL() throws -> URL {
         let appSupport = try appSupportDirectoryURL()
         let rootURL = appSupport.appendingPathComponent(rootFolder, isDirectory: true)

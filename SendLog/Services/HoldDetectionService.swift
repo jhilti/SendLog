@@ -52,10 +52,7 @@ struct HoldDetectionService {
 
     private func holds(from observation: VNContoursObservation) -> [Hold] {
         var candidateRects: [NormalizedRect] = []
-        for index in 0..<observation.topLevelContourCount {
-            guard let contour = try? observation.topLevelContour(at: index) else {
-                continue
-            }
+        for contour in observation.topLevelContours {
             collectBoundingRects(for: contour, into: &candidateRects)
         }
 
@@ -82,10 +79,7 @@ struct HoldDetectionService {
             output.append(NormalizedRect.fromVisionRect(boundingRect))
         }
 
-        for index in 0..<contour.childContourCount {
-            guard let child = try? contour.childContour(at: index) else {
-                continue
-            }
+        for child in contour.childContours {
             collectBoundingRects(for: child, into: &output)
         }
     }

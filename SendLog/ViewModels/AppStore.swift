@@ -7,6 +7,8 @@ final class AppStore: ObservableObject {
         case invalidImage
         case wallNotFound
         case missingWallImage
+        case invalidBackupData
+        case unsupportedBackupVersion
 
         var errorDescription: String? {
             switch self {
@@ -16,8 +18,25 @@ final class AppStore: ObservableObject {
                 return "Could not find this wall."
             case .missingWallImage:
                 return "The wall image is missing from local storage."
+            case .invalidBackupData:
+                return "The backup file is corrupted or unsupported."
+            case .unsupportedBackupVersion:
+                return "This backup version is not supported by the current app."
             }
         }
+    }
+
+    private struct BackupPayload: Codable {
+        static let currentVersion = 1
+
+        let version: Int
+        let exportedAt: Date
+        let walls: [BackupWall]
+    }
+
+    private struct BackupWall: Codable {
+        let wall: Wall
+        let imageDataBase64: String
     }
 
     @Published private(set) var walls: [Wall] = []
@@ -159,6 +178,59 @@ final class AppStore: ObservableObject {
 
         walls[index].boulders.removeAll { $0.id == boulderID }
         walls[index].updatedAt = Date()
+        try await persist()
+    }
+
+    func exportBackupData() throws -> Data {
+        let backupWalls = try walls.map { wall -> BackupWall in
+            guard let imageData = imageStore.loadImageData(filename: wall.imageFilename) else {
+                throw AppStoreError.missingWallImage
+            }
+            return BackupWall(wall: wall, imageDataBase64: imageData.base64EncodedString())
+        }
+
+        let payload = BackupPayload(
+            version: BackupPayload.currentVersion,
+            exportedAt: Date(),
+            walls: backupWalls
+        )
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(payload)
+    }
+
+    func importBackupData(_ data: Data) async throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let payload: BackupPayload
+        do {
+            payload = try decoder.decode(BackupPayload.self, from: data)
+        } catch {
+            throw AppStoreError.invalidBackupData
+        }
+
+        guard payload.version == BackupPayload.currentVersion else {
+            throw AppStoreError.unsupportedBackupVersion
+        }
+
+        var importedWalls: [Wall] = []
+        importedWalls.reserveCapacity(payload.walls.count)
+
+        for backupWall in payload.walls {
+            guard let imageData = Data(base64Encoded: backupWall.imageDataBase64),
+                  UIImage(data: imageData) != nil else {
+                throw AppStoreError.invalidBackupData
+            }
+
+            var wall = backupWall.wall
+            wall.imageFilename = try imageStore.saveImageData(imageData, for: wall.id)
+            importedWalls.append(wall)
+        }
+
+        imageCache.removeAllObjects()
+        walls = importedWalls.sorted { $0.updatedAt > $1.updatedAt }
         try await persist()
     }
 

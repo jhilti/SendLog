@@ -6,9 +6,11 @@ Offline-first iOS app for spray wall boulders.
 - Import a wall photo from your library.
 - Auto-detect likely holds on device using Vision contours.
 - Tap holds to select a boulder problem.
-- Save problems with name, grade, notes, and selected holds.
+- Save problems with name, fixed grade picker (`6a` to `8a`), notes, and selected holds.
 - Browse walls and saved problems fully offline.
+- Browse a global problems library with search and grade filter.
 - Optional manual hold editing: remove wrong holds and add holds by tapping the wall image.
+- Export/import a full JSON backup of walls, holds, problems, and wall images.
 
 ## Project setup (VS Code + Xcode)
 1. Install full Xcode from the App Store.

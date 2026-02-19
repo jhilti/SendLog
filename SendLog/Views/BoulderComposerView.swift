@@ -8,7 +8,7 @@ struct BoulderComposerView: View {
 
     @State private var selectedHoldIDs: Set<UUID> = []
     @State private var name = ""
-    @State private var grade = ""
+    @State private var selectedGrade: ClimbingGrade = .sixA
     @State private var notes = ""
     @State private var isSaving = false
     @State private var errorMessage: String?
@@ -38,8 +38,12 @@ struct BoulderComposerView: View {
                                 TextField("Problem name", text: $name)
                                     .textFieldStyle(.roundedBorder)
 
-                                TextField("Grade (e.g. V4)", text: $grade)
-                                    .textFieldStyle(.roundedBorder)
+                                Picker("Grade", selection: $selectedGrade) {
+                                    ForEach(ClimbingGrade.allCases) { grade in
+                                        Text(grade.rawValue).tag(grade)
+                                    }
+                                }
+                                .pickerStyle(.menu)
 
                                 TextField("Notes", text: $notes, axis: .vertical)
                                     .textFieldStyle(.roundedBorder)
@@ -83,7 +87,6 @@ struct BoulderComposerView: View {
     private var canSave: Bool {
         !isSaving
             && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !grade.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !selectedHoldIDs.isEmpty
     }
 
@@ -104,7 +107,7 @@ struct BoulderComposerView: View {
                 try await store.saveBoulder(
                     wallID: wallID,
                     name: name,
-                    grade: grade,
+                    grade: selectedGrade.rawValue,
                     notes: notes,
                     holdIDs: orderedIDs
                 )
