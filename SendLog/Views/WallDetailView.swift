@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct WallDetailView: View {
     @EnvironmentObject private var store: AppStore
@@ -9,6 +10,7 @@ struct WallDetailView: View {
     @State private var isDetectingHolds = false
     @State private var isEditingHolds = false
     @State private var isAddModeEnabled = false
+    @State private var previewBoulder: Boulder?
     @State private var errorMessage: String?
 
     var body: some View {
@@ -28,12 +30,14 @@ struct WallDetailView: View {
                             },
                             isZoomEnabled: isEditingHolds && isAddModeEnabled
                         )
-                        .frame(maxHeight: 420)
 
                         controlPanel(for: wall)
 
                         Text("Problems")
                             .font(.title3.weight(.semibold))
+                        Text("Tap a problem to preview its selected holds.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
 
                         if wall.boulders.isEmpty {
                             Text("No saved problems yet.")
@@ -43,6 +47,9 @@ struct WallDetailView: View {
                                 ForEach(wall.boulders) { boulder in
                                     BoulderRow(
                                         boulder: boulder,
+                                        onSelect: {
+                                            previewBoulder = boulder
+                                        },
                                         onDelete: {
                                             deleteBoulder(boulderID: boulder.id)
                                         }
@@ -67,6 +74,18 @@ struct WallDetailView: View {
                 }
                 .sheet(isPresented: $isCreatingBoulder) {
                     BoulderComposerView(wallID: wallID)
+                }
+                .sheet(item: $previewBoulder) { boulder in
+                    if let wall = store.wall(withID: wallID),
+                       let image = store.image(for: wall) {
+                        BoulderPreviewSheet(wall: wall, image: image, boulder: boulder)
+                    } else {
+                        ContentUnavailableView(
+                            "Wall Not Available",
+                            systemImage: "exclamationmark.triangle",
+                            description: Text("Could not load this wall.")
+                        )
+                    }
                 }
                 .alert("Error", isPresented: Binding(
                     get: { errorMessage != nil },
@@ -177,6 +196,7 @@ struct WallDetailView: View {
 
 private struct BoulderRow: View {
     let boulder: Boulder
+    let onSelect: () -> Void
     let onDelete: () -> Void
 
     private static let dateFormatter: DateFormatter = {
@@ -214,5 +234,54 @@ private struct BoulderRow: View {
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 12).fill(Color(.secondarySystemBackground)))
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
+    }
+}
+
+private struct BoulderPreviewSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let wall: Wall
+    let image: UIImage
+    let boulder: Boulder
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    WallCanvasView(
+                        image: image,
+                        holds: wall.holds,
+                        selectedHoldIDs: Set(boulder.holdIDs),
+                        onHoldTap: nil,
+                        onEmptyImageTap: nil
+                    )
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(boulder.name)
+                            .font(.title3.weight(.semibold))
+                        Text("\(boulder.grade) • \(boulder.holdIDs.count) holds")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        if !boulder.notes.isEmpty {
+                            Text(boulder.notes)
+                                .font(.body)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("Problem Preview")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
     }
 }
