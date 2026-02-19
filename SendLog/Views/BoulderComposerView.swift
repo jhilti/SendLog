@@ -28,7 +28,6 @@ struct BoulderComposerView: View {
                                 },
                                 onEmptyImageTap: { _ in }
                             )
-                            .frame(maxHeight: 420)
 
                             Text("Selected holds: \(selectedHoldIDs.count)")
                                 .font(.subheadline)
