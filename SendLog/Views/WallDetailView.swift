@@ -25,7 +25,8 @@ struct WallDetailView: View {
                             },
                             onEmptyImageTap: { point in
                                 handleImageTap(point)
-                            }
+                            },
+                            isZoomEnabled: isEditingHolds && isAddModeEnabled
                         )
                         .frame(maxHeight: 420)
 
@@ -112,7 +113,7 @@ struct WallDetailView: View {
 
             if isEditingHolds {
                 Toggle("Add Hold Mode", isOn: $isAddModeEnabled)
-                Text("Tap a hold to remove it. In Add Hold Mode, tap empty wall space to create a hold.")
+                Text("Tap a hold to remove it. In Add Hold Mode, pinch to zoom, pan, and tap empty wall space to add a hold.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

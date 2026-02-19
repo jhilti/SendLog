@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		15998239C0253A422DD58376 /* BoulderComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83490CE8EB2216D50A0636D9 /* BoulderComposerView.swift */; };
 		3141B903C8E4F1E58DE20A86 /* HoldDetectionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DC1FE03CB26F3F8AC57647D /* HoldDetectionService.swift */; };
+		319FF97E848A45E8130A1E39 /* NormalizedPoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = 359373B420436279C1C6C2A1 /* NormalizedPoint.swift */; };
 		32C40E145A7071292B873EE9 /* BackupDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAC3AA8553B050EDB0B8BACA /* BackupDocument.swift */; };
 		33F3808C1903BE4CC0887D13 /* NormalizedRect.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1D7C0BBE82509D02BD33A2 /* NormalizedRect.swift */; };
 		39E0AF5A7C622D4A75BDAA90 /* SendLogApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33C399CFDEE0B2A4A57D61F8 /* SendLogApp.swift */; };
@@ -29,6 +30,7 @@
 /* Begin PBXFileReference section */
 		1D584263A3B10006D5D916DC /* Wall.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Wall.swift; sourceTree = "<group>"; };
 		33C399CFDEE0B2A4A57D61F8 /* SendLogApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendLogApp.swift; sourceTree = "<group>"; };
+		359373B420436279C1C6C2A1 /* NormalizedPoint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NormalizedPoint.swift; sourceTree = "<group>"; };
 		4DC1FE03CB26F3F8AC57647D /* HoldDetectionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoldDetectionService.swift; sourceTree = "<group>"; };
 		4E8BB91E3EC0C0E6DD79573E /* WallDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallDetailView.swift; sourceTree = "<group>"; };
 		67F6B2989A8428DD11B0B040 /* Hold.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Hold.swift; sourceTree = "<group>"; };
@@ -92,6 +94,7 @@
 				E118124BEA230498C5864E06 /* Boulder.swift */,
 				7BF3B21424DC38C6F812EAB7 /* ClimbingGrade.swift */,
 				67F6B2989A8428DD11B0B040 /* Hold.swift */,
+				359373B420436279C1C6C2A1 /* NormalizedPoint.swift */,
 				CA1D7C0BBE82509D02BD33A2 /* NormalizedRect.swift */,
 				1D584263A3B10006D5D916DC /* Wall.swift */,
 			);
@@ -215,6 +218,7 @@
 				CA12EE458F8D8829B22296A7 /* Hold.swift in Sources */,
 				3141B903C8E4F1E58DE20A86 /* HoldDetectionService.swift in Sources */,
 				91B23B1E659E0B8901F51FA7 /* ImageStore.swift in Sources */,
+				319FF97E848A45E8130A1E39 /* NormalizedPoint.swift in Sources */,
 				33F3808C1903BE4CC0887D13 /* NormalizedRect.swift in Sources */,
 				39E0AF5A7C622D4A75BDAA90 /* SendLogApp.swift in Sources */,
 				F622B47A6CB078625CFFD61E /* Wall.swift in Sources */,

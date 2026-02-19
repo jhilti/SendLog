@@ -132,6 +132,16 @@ final class AppStore: ObservableObject {
         guard let index = wallIndex(for: wallID) else {
             throw AppStoreError.wallNotFound
         }
+        guard let image = image(for: walls[index]) else {
+            throw AppStoreError.missingWallImage
+        }
+
+        if let segmented = try await detector.segmentHold(around: normalizedPoint, in: image) {
+            walls[index].holds.append(segmented)
+            walls[index].updatedAt = Date()
+            try await persist()
+            return
+        }
 
         let defaultSize: CGFloat = 0.08
         let rect = NormalizedRect(
