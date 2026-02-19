@@ -1,0 +1,406 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		15998239C0253A422DD58376 /* BoulderComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83490CE8EB2216D50A0636D9 /* BoulderComposerView.swift */; };
+		3141B903C8E4F1E58DE20A86 /* HoldDetectionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DC1FE03CB26F3F8AC57647D /* HoldDetectionService.swift */; };
+		33F3808C1903BE4CC0887D13 /* NormalizedRect.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1D7C0BBE82509D02BD33A2 /* NormalizedRect.swift */; };
+		39E0AF5A7C622D4A75BDAA90 /* SendLogApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33C399CFDEE0B2A4A57D61F8 /* SendLogApp.swift */; };
+		41A391AF0139FDDE8FDA7F65 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 861A06F65FF36276F58A3D4F /* Assets.xcassets */; };
+		58DF188EC5EA4FEE42E466BE /* CreateWallSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAA32D618DB2AA0F4073ECDD /* CreateWallSheet.swift */; };
+		5BCA396DAD0517F4AF7F486F /* Boulder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E118124BEA230498C5864E06 /* Boulder.swift */; };
+		706573FEC18B19439AC490E6 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74555429441A7447B82B0F4B /* AppStore.swift */; };
+		7A4856EB990BF6AF760EB7B7 /* WallLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0EFA8B27354E5830C4C819A /* WallLibraryView.swift */; };
+		7B8AB4116F3C99682F60CD2B /* WallDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E8BB91E3EC0C0E6DD79573E /* WallDetailView.swift */; };
+		91B23B1E659E0B8901F51FA7 /* ImageStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99F5E50D428DD44B3372160C /* ImageStore.swift */; };
+		CA12EE458F8D8829B22296A7 /* Hold.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67F6B2989A8428DD11B0B040 /* Hold.swift */; };
+		CD46F4A938E3CF7B687ECA2E /* WallRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = E13B9B6E69660953A5AFD81C /* WallRepository.swift */; };
+		CF0486AA93864F62FE3DFEB4 /* WallCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F06AABBE9507A10781FB8595 /* WallCanvasView.swift */; };
+		F622B47A6CB078625CFFD61E /* Wall.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D584263A3B10006D5D916DC /* Wall.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		1D584263A3B10006D5D916DC /* Wall.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Wall.swift; sourceTree = "<group>"; };
+		33C399CFDEE0B2A4A57D61F8 /* SendLogApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendLogApp.swift; sourceTree = "<group>"; };
+		4DC1FE03CB26F3F8AC57647D /* HoldDetectionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoldDetectionService.swift; sourceTree = "<group>"; };
+		4E8BB91E3EC0C0E6DD79573E /* WallDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallDetailView.swift; sourceTree = "<group>"; };
+		67F6B2989A8428DD11B0B040 /* Hold.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Hold.swift; sourceTree = "<group>"; };
+		74555429441A7447B82B0F4B /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
+		83490CE8EB2216D50A0636D9 /* BoulderComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoulderComposerView.swift; sourceTree = "<group>"; };
+		861A06F65FF36276F58A3D4F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		99F5E50D428DD44B3372160C /* ImageStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageStore.swift; sourceTree = "<group>"; };
+		BAA32D618DB2AA0F4073ECDD /* CreateWallSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreateWallSheet.swift; sourceTree = "<group>"; };
+		CA1D7C0BBE82509D02BD33A2 /* NormalizedRect.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NormalizedRect.swift; sourceTree = "<group>"; };
+		D0EFA8B27354E5830C4C819A /* WallLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallLibraryView.swift; sourceTree = "<group>"; };
+		D752A9F286F73554C79CAC14 /* SendLog.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = SendLog.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E118124BEA230498C5864E06 /* Boulder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Boulder.swift; sourceTree = "<group>"; };
+		E13B9B6E69660953A5AFD81C /* WallRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallRepository.swift; sourceTree = "<group>"; };
+		F06AABBE9507A10781FB8595 /* WallCanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallCanvasView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		17AAB0FACFCE99359387CAF7 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				74555429441A7447B82B0F4B /* AppStore.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		18629BE12D8286A8AEDE5462 = {
+			isa = PBXGroup;
+			children = (
+				3C1883F2668088329C998F91 /* SendLog */,
+				240611AEE1D20D9225709449 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		240611AEE1D20D9225709449 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				D752A9F286F73554C79CAC14 /* SendLog.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		3C1883F2668088329C998F91 /* SendLog */ = {
+			isa = PBXGroup;
+			children = (
+				EB8BA4B2A2C68679356FB559 /* App */,
+				69676C8D95ED85FC75C0C3B8 /* Models */,
+				FAAF3A5BE6BB30580F72009F /* Resources */,
+				DD3664265BA6102134B683F8 /* Services */,
+				17AAB0FACFCE99359387CAF7 /* ViewModels */,
+				F94E2B443991D2F53C4379BA /* Views */,
+			);
+			path = SendLog;
+			sourceTree = "<group>";
+		};
+		69676C8D95ED85FC75C0C3B8 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				E118124BEA230498C5864E06 /* Boulder.swift */,
+				67F6B2989A8428DD11B0B040 /* Hold.swift */,
+				CA1D7C0BBE82509D02BD33A2 /* NormalizedRect.swift */,
+				1D584263A3B10006D5D916DC /* Wall.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		DD3664265BA6102134B683F8 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				4DC1FE03CB26F3F8AC57647D /* HoldDetectionService.swift */,
+				99F5E50D428DD44B3372160C /* ImageStore.swift */,
+				E13B9B6E69660953A5AFD81C /* WallRepository.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		EB8BA4B2A2C68679356FB559 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				33C399CFDEE0B2A4A57D61F8 /* SendLogApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		F94E2B443991D2F53C4379BA /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				83490CE8EB2216D50A0636D9 /* BoulderComposerView.swift */,
+				BAA32D618DB2AA0F4073ECDD /* CreateWallSheet.swift */,
+				F06AABBE9507A10781FB8595 /* WallCanvasView.swift */,
+				4E8BB91E3EC0C0E6DD79573E /* WallDetailView.swift */,
+				D0EFA8B27354E5830C4C819A /* WallLibraryView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		FAAF3A5BE6BB30580F72009F /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				861A06F65FF36276F58A3D4F /* Assets.xcassets */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		B5BE9F09A476DFAADBB6B747 /* SendLog */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F1B3F75BC6C0E897E815ABD4 /* Build configuration list for PBXNativeTarget "SendLog" */;
+			buildPhases = (
+				14EF3D453943D16AC7DCC24A /* Sources */,
+				BA05BA9D32AF8AF93E09E937 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SendLog;
+			packageProductDependencies = (
+			);
+			productName = SendLog;
+			productReference = D752A9F286F73554C79CAC14 /* SendLog.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		0CC3773D991C4643828E6BC9 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					B5BE9F09A476DFAADBB6B747 = {
+						DevelopmentTeam = "";
+					};
+				};
+			};
+			buildConfigurationList = F1DFFD0C174264AC6F317711 /* Build configuration list for PBXProject "SendLog" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 18629BE12D8286A8AEDE5462;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				B5BE9F09A476DFAADBB6B747 /* SendLog */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		BA05BA9D32AF8AF93E09E937 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				41A391AF0139FDDE8FDA7F65 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		14EF3D453943D16AC7DCC24A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				706573FEC18B19439AC490E6 /* AppStore.swift in Sources */,
+				5BCA396DAD0517F4AF7F486F /* Boulder.swift in Sources */,
+				15998239C0253A422DD58376 /* BoulderComposerView.swift in Sources */,
+				58DF188EC5EA4FEE42E466BE /* CreateWallSheet.swift in Sources */,
+				CA12EE458F8D8829B22296A7 /* Hold.swift in Sources */,
+				3141B903C8E4F1E58DE20A86 /* HoldDetectionService.swift in Sources */,
+				91B23B1E659E0B8901F51FA7 /* ImageStore.swift in Sources */,
+				33F3808C1903BE4CC0887D13 /* NormalizedRect.swift in Sources */,
+				39E0AF5A7C622D4A75BDAA90 /* SendLogApp.swift in Sources */,
+				F622B47A6CB078625CFFD61E /* Wall.swift in Sources */,
+				CF0486AA93864F62FE3DFEB4 /* WallCanvasView.swift in Sources */,
+				7B8AB4116F3C99682F60CD2B /* WallDetailView.swift in Sources */,
+				7A4856EB990BF6AF760EB7B7 /* WallLibraryView.swift in Sources */,
+				CD46F4A938E3CF7B687ECA2E /* WallRepository.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		3C67530164DE11069F247DC4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		7450AFADC3D368129B41C4F8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = "";
+				INFOPLIST_FILE = SendLog/Resources/Info.plist;
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save exported wall images and backups from SendLog.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Import wall photos to build and save boulder problems offline.";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.SendLog;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		9409B3D89CD36D11877E749B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = "";
+				INFOPLIST_FILE = SendLog/Resources/Info.plist;
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save exported wall images and backups from SendLog.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Import wall photos to build and save boulder problems offline.";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.SendLog;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		D06F3330796D4757843AFCFC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		F1B3F75BC6C0E897E815ABD4 /* Build configuration list for PBXNativeTarget "SendLog" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9409B3D89CD36D11877E749B /* Debug */,
+				7450AFADC3D368129B41C4F8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		F1DFFD0C174264AC6F317711 /* Build configuration list for PBXProject "SendLog" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D06F3330796D4757843AFCFC /* Debug */,
+				3C67530164DE11069F247DC4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 0CC3773D991C4643828E6BC9 /* Project object */;
+}

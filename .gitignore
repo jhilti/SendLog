@@ -1,0 +1,14 @@
+# Xcode user state
+*.xcuserstate
+xcuserdata/
+
+# Build outputs
+build/
+DerivedData/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# macOS
+.DS_Store
