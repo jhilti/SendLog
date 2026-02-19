@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 63;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -43,7 +43,7 @@
 		CA1D7C0BBE82509D02BD33A2 /* NormalizedRect.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NormalizedRect.swift; sourceTree = "<group>"; };
 		CAC3AA8553B050EDB0B8BACA /* BackupDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupDocument.swift; sourceTree = "<group>"; };
 		D0EFA8B27354E5830C4C819A /* WallLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallLibraryView.swift; sourceTree = "<group>"; };
-		D752A9F286F73554C79CAC14 /* SendLog.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = SendLog.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D752A9F286F73554C79CAC14 /* SendLog.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SendLog.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E118124BEA230498C5864E06 /* Boulder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Boulder.swift; sourceTree = "<group>"; };
 		E13B9B6E69660953A5AFD81C /* WallRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallRepository.swift; sourceTree = "<group>"; };
 		F06AABBE9507A10781FB8595 /* WallCanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallCanvasView.swift; sourceTree = "<group>"; };
@@ -168,11 +168,6 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
-				TargetAttributes = {
-					B5BE9F09A476DFAADBB6B747 = {
-						DevelopmentTeam = "";
-					};
-				};
 			};
 			buildConfigurationList = F1DFFD0C174264AC6F317711 /* Build configuration list for PBXProject "SendLog" */;
 			compatibilityVersion = "Xcode 14.0";
@@ -184,7 +179,6 @@
 			);
 			mainGroup = 18629BE12D8286A8AEDE5462;
 			minimizedProjectReferenceProxies = 1;
-			preferredProjectObjectVersion = 77;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -293,7 +287,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = Y53LL7K6KC;
 				INFOPLIST_FILE = SendLog/Resources/Info.plist;
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save exported wall images and backups from SendLog.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Import wall photos to build and save boulder problems offline.";
@@ -302,7 +296,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.SendLog;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jhilti.SendLog;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -314,7 +308,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = Y53LL7K6KC;
 				INFOPLIST_FILE = SendLog/Resources/Info.plist;
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save exported wall images and backups from SendLog.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Import wall photos to build and save boulder problems offline.";
@@ -323,7 +317,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.SendLog;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jhilti.SendLog;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
