@@ -26,7 +26,7 @@ struct BoulderComposerView: View {
                                 onHoldTap: { hold in
                                     toggleSelection(for: hold.id)
                                 },
-                                onEmptyImageTap: { _ in }
+                                onEmptyImageTap: nil
                             )
 
                             Text("Selected holds: \(selectedHoldIDs.count)")

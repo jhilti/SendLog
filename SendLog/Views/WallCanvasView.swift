@@ -7,20 +7,26 @@ struct WallCanvasView: View {
     let selectedHoldIDs: Set<UUID>
     var onHoldTap: ((Hold) -> Void)?
     var onEmptyImageTap: ((CGPoint) -> Void)?
+    var onContourComplete: (([CGPoint]) -> Void)?
+    var onContourUndo: (() -> Void)? = nil
     var isZoomEnabled = false
+    var isContourDrawEnabled = false
+    var nearestSelectionEnabled = true
 
     @State private var zoomScale: CGFloat = 1
     @State private var storedZoomScale: CGFloat = 1
     @State private var zoomOffset: CGSize = .zero
     @State private var storedZoomOffset: CGSize = .zero
+    @State private var draftContourPoints: [CGPoint] = []
+    @State private var isMagnifying = false
 
     var body: some View {
         GeometryReader { geometry in
-            let imageFrame = aspectFitRect(for: image.size, in: geometry.size)
+            let imageSize = layoutImageSize
+            let imageFrame = aspectFitRect(for: imageSize, in: geometry.size)
             let displayScale = isZoomEnabled ? zoomScale : 1
             let displayOffset = isZoomEnabled ? zoomOffset : .zero
-
-            ZStack {
+            let baseCanvas = ZStack {
                 Color(.secondarySystemBackground)
 
                 ZStack {
@@ -33,13 +39,48 @@ struct WallCanvasView: View {
                     Canvas { context, _ in
                         for hold in holds {
                             let isSelected = selectedHoldIDs.contains(hold.id)
-                            let strokeColor: Color = isSelected ? .blue : .orange
+                            let isManualMarker = hold.source == .manual
+                                && hold.confidence <= 0.3
+                                && (hold.contour?.count ?? 0) >= 10
+                            let strokeColor: Color
+                            if isSelected {
+                                strokeColor = .blue
+                            } else if isManualMarker {
+                                strokeColor = .orange.opacity(0.38)
+                            } else {
+                                strokeColor = .orange
+                            }
                             let path = holdPath(for: hold, in: imageFrame)
 
-                            if isSelected {
-                                context.fill(path, with: .color(strokeColor.opacity(0.22)))
+                            if isSelected && !isManualMarker {
+                                context.fill(path, with: .color(strokeColor.opacity(0.35)))
                             }
-                            context.stroke(path, with: .color(strokeColor), lineWidth: isSelected ? 3 : 2)
+                            context.stroke(
+                                path,
+                                with: .color(strokeColor),
+                                lineWidth: isSelected ? 4 : (isManualMarker ? 2.6 : 2)
+                            )
+                        }
+
+                        if draftContourPoints.count >= 2 {
+                            var draftPath = Path()
+                            let first = pointFromNormalized(draftContourPoints[0], in: imageFrame)
+                            draftPath.move(to: first)
+                            for point in draftContourPoints.dropFirst() {
+                                draftPath.addLine(to: pointFromNormalized(point, in: imageFrame))
+                            }
+                            context.stroke(draftPath, with: .color(.orange.opacity(0.85)), lineWidth: 2.5)
+                        }
+
+                        if let lastPoint = draftContourPoints.last {
+                            let markerCenter = pointFromNormalized(lastPoint, in: imageFrame)
+                            let markerRect = CGRect(
+                                x: markerCenter.x - 4,
+                                y: markerCenter.y - 4,
+                                width: 8,
+                                height: 8
+                            )
+                            context.fill(Path(ellipseIn: markerRect), with: .color(.orange.opacity(0.9)))
                         }
                     }
                 }
@@ -47,18 +88,67 @@ struct WallCanvasView: View {
                 .offset(displayOffset)
             }
             .contentShape(Rectangle())
-            .gesture(tapGesture(in: imageFrame))
-            .simultaneousGesture(dragGesture(in: imageFrame))
-            .simultaneousGesture(magnificationGesture(in: imageFrame))
+
+            Group {
+                if isContourDrawEnabled {
+                    baseCanvas
+                        .highPriorityGesture(contourDrawGesture(in: imageFrame))
+                        .simultaneousGesture(magnificationGesture(in: imageFrame))
+                        .simultaneousGesture(pinchPanGesture(in: imageFrame))
+                } else if isZoomEnabled {
+                    baseCanvas
+                        .highPriorityGesture(tapGesture(in: imageFrame))
+                        .simultaneousGesture(dragGesture(in: imageFrame))
+                        .simultaneousGesture(magnificationGesture(in: imageFrame))
+                } else if hasTapHandlers {
+                    baseCanvas
+                        .highPriorityGesture(tapGesture(in: imageFrame))
+                } else {
+                    baseCanvas
+                }
+            }
             .onChange(of: isZoomEnabled) { _, enabled in
                 if !enabled {
                     resetZoom()
                 }
             }
+            .onChange(of: isContourDrawEnabled) { _, enabled in
+                if !enabled {
+                    draftContourPoints = []
+                }
+            }
         }
         .frame(maxWidth: .infinity)
-        .aspectRatio(image.size.width / max(image.size.height, 1), contentMode: .fit)
+        .aspectRatio(layoutImageSize.width / max(layoutImageSize.height, 1), contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(alignment: .topLeading) {
+            if isContourDrawEnabled {
+                Button {
+                    undoLastContourStep()
+                } label: {
+                    Label("Undo", systemImage: "arrow.uturn.backward")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(.ultraThinMaterial, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(8)
+            }
+        }
+    }
+
+    private var hasTapHandlers: Bool {
+        onHoldTap != nil || onEmptyImageTap != nil
+    }
+
+    private var layoutImageSize: CGSize {
+        switch image.imageOrientation {
+        case .left, .leftMirrored, .right, .rightMirrored:
+            return CGSize(width: image.size.height, height: image.size.width)
+        default:
+            return image.size
+        }
     }
 
     private func tapGesture(in imageFrame: CGRect) -> some Gesture {
@@ -69,9 +159,16 @@ struct WallCanvasView: View {
                     return
                 }
 
-                if let hold = holds.reversed().first(where: { holdContains($0, point: location, imageFrame: imageFrame) }) {
-                    onHoldTap?(hold)
-                    return
+                if let onHoldTap {
+                    if let hold = holds.reversed().first(where: { holdContains($0, point: location, imageFrame: imageFrame) }) {
+                        onHoldTap(hold)
+                        return
+                    }
+
+                    if nearestSelectionEnabled, let nearest = nearestHold(to: location, in: imageFrame) {
+                        onHoldTap(nearest)
+                        return
+                    }
                 }
 
                 let normalizedPoint = CGPoint(
@@ -80,6 +177,108 @@ struct WallCanvasView: View {
                 )
                 onEmptyImageTap?(normalizedPoint)
             }
+    }
+
+    private func contourDrawGesture(in imageFrame: CGRect) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .local)
+            .onChanged { value in
+                guard !isMagnifying else {
+                    return
+                }
+
+                let location = locationInUnscaledCanvas(from: value.location, imageFrame: imageFrame)
+                guard imageFrame.contains(location) else {
+                    return
+                }
+
+                let normalizedPoint = CGPoint(
+                    x: (location.x - imageFrame.minX) / imageFrame.width,
+                    y: (location.y - imageFrame.minY) / imageFrame.height
+                )
+                appendContourPoint(normalizedPoint)
+            }
+            .onEnded { _ in
+                guard !isMagnifying else {
+                    return
+                }
+                completeContourIfPossible()
+            }
+    }
+
+    private func pinchPanGesture(in imageFrame: CGRect) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .local)
+            .onChanged { value in
+                guard isZoomEnabled, isContourDrawEnabled, isMagnifying, zoomScale > 1.01 else {
+                    return
+                }
+
+                let proposed = CGSize(
+                    width: storedZoomOffset.width + value.translation.width,
+                    height: storedZoomOffset.height + value.translation.height
+                )
+                zoomOffset = clampedOffset(proposed, for: zoomScale, imageFrame: imageFrame)
+            }
+    }
+
+    private func appendContourPoint(_ normalizedPoint: CGPoint) {
+        let point = CGPoint(
+            x: min(max(0, normalizedPoint.x), 1),
+            y: min(max(0, normalizedPoint.y), 1)
+        )
+
+        if let last = draftContourPoints.last {
+            let distance = hypot(last.x - point.x, last.y - point.y)
+            guard distance >= 0.0035 else {
+                return
+            }
+        }
+
+        draftContourPoints.append(point)
+    }
+
+    private func completeContourIfPossible() {
+        guard draftContourPoints.count >= 3 else {
+            draftContourPoints = []
+            return
+        }
+
+        onContourComplete?(draftContourPoints)
+        draftContourPoints = []
+    }
+
+    private func undoLastContourStep() {
+        if !draftContourPoints.isEmpty {
+            let removeCount = min(12, draftContourPoints.count)
+            draftContourPoints.removeLast(removeCount)
+            return
+        }
+
+        onContourUndo?()
+    }
+
+    private func pointFromNormalized(_ point: CGPoint, in imageFrame: CGRect) -> CGPoint {
+        CGPoint(
+            x: imageFrame.minX + (point.x * imageFrame.width),
+            y: imageFrame.minY + (point.y * imageFrame.height)
+        )
+    }
+
+    private func nearestHold(to location: CGPoint, in imageFrame: CGRect) -> Hold? {
+        let maxDistance = max(20, min(imageFrame.width, imageFrame.height) * 0.03)
+        let nearest = holds
+            .map { hold -> (hold: Hold, distance: CGFloat) in
+                let rect = hold.rect.toCGRect(in: imageFrame)
+                let center = CGPoint(x: rect.midX, y: rect.midY)
+                return (hold: hold, distance: hypot(location.x - center.x, location.y - center.y))
+            }
+            .min { left, right in
+                left.distance < right.distance
+            }
+
+        guard let nearest, nearest.distance <= maxDistance else {
+            return nil
+        }
+        return nearest.hold
     }
 
     private func dragGesture(in imageFrame: CGRect) -> some Gesture {
@@ -120,6 +319,7 @@ struct WallCanvasView: View {
                     return
                 }
 
+                isMagnifying = true
                 let proposedScale = clampedScale(storedZoomScale * value)
                 zoomScale = proposedScale
                 zoomOffset = clampedOffset(zoomOffset, for: proposedScale, imageFrame: imageFrame)
@@ -129,6 +329,7 @@ struct WallCanvasView: View {
                     return
                 }
 
+                isMagnifying = false
                 zoomScale = clampedScale(storedZoomScale * value)
                 zoomOffset = clampedOffset(zoomOffset, for: zoomScale, imageFrame: imageFrame)
                 storedZoomScale = zoomScale

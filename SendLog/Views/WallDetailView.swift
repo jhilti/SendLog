@@ -10,6 +10,8 @@ struct WallDetailView: View {
     @State private var isDetectingHolds = false
     @State private var isEditingHolds = false
     @State private var isAddModeEnabled = false
+    @State private var isContourDrawModeEnabled = false
+    @State private var isShowingDeleteAllHoldsConfirmation = false
     @State private var previewBoulder: Boulder?
     @State private var errorMessage: String?
 
@@ -22,13 +24,21 @@ struct WallDetailView: View {
                             image: image,
                             holds: wall.holds,
                             selectedHoldIDs: [],
-                            onHoldTap: { hold in
+                            onHoldTap: (isEditingHolds && !isAddModeEnabled) ? { hold in
                                 handleHoldTap(hold)
-                            },
-                            onEmptyImageTap: { point in
+                            } : nil,
+                            onEmptyImageTap: (isEditingHolds && isAddModeEnabled && !isContourDrawModeEnabled) ? { point in
                                 handleImageTap(point)
-                            },
-                            isZoomEnabled: isEditingHolds && isAddModeEnabled
+                            } : nil,
+                            onContourComplete: (isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled) ? { points in
+                                handleContourDraw(points)
+                            } : nil,
+                            onContourUndo: (isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled) ? {
+                                handleContourUndo()
+                            } : nil,
+                            isZoomEnabled: isEditingHolds && isAddModeEnabled,
+                            isContourDrawEnabled: isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled,
+                            nearestSelectionEnabled: !isAddModeEnabled && !isContourDrawModeEnabled
                         )
 
                         controlPanel(for: wall)
@@ -58,7 +68,8 @@ struct WallDetailView: View {
                             }
                         }
                     }
-                    .padding()
+                    .padding(.horizontal)
+                    .padding(.bottom, 12)
                 }
                 .navigationTitle(wall.name)
                 .navigationBarTitleDisplayMode(.inline)
@@ -72,10 +83,10 @@ struct WallDetailView: View {
                         .disabled(wall.holds.isEmpty)
                     }
                 }
-                .sheet(isPresented: $isCreatingBoulder) {
+                .fullScreenCover(isPresented: $isCreatingBoulder) {
                     BoulderComposerView(wallID: wallID)
                 }
-                .sheet(item: $previewBoulder) { boulder in
+                .fullScreenCover(item: $previewBoulder) { boulder in
                     if let wall = store.wall(withID: wallID),
                        let image = store.image(for: wall) {
                         BoulderPreviewSheet(wall: wall, image: image, boulder: boulder)
@@ -86,6 +97,18 @@ struct WallDetailView: View {
                             description: Text("Could not load this wall.")
                         )
                     }
+                }
+                .confirmationDialog(
+                    "Delete all holds on this wall?",
+                    isPresented: $isShowingDeleteAllHoldsConfirmation,
+                    titleVisibility: .visible
+                ) {
+                    Button("Delete All Holds", role: .destructive) {
+                        deleteAllHolds()
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This removes every detected and manual hold marker.")
                 }
                 .alert("Error", isPresented: Binding(
                     get: { errorMessage != nil },
@@ -124,6 +147,7 @@ struct WallDetailView: View {
                         isEditingHolds.toggle()
                         if !isEditingHolds {
                             isAddModeEnabled = false
+                            isContourDrawModeEnabled = false
                         }
                     }
                 }
@@ -131,10 +155,42 @@ struct WallDetailView: View {
             }
 
             if isEditingHolds {
-                Toggle("Add Hold Mode", isOn: $isAddModeEnabled)
-                Text("Tap a hold to remove it. In Add Hold Mode, pinch to zoom, pan, and tap empty wall space to add a hold.")
+                Toggle(
+                    "Add Hold Mode",
+                    isOn: Binding(
+                        get: { isAddModeEnabled },
+                        set: { enabled in
+                            isAddModeEnabled = enabled
+                            if !enabled {
+                                isContourDrawModeEnabled = false
+                            }
+                        }
+                    )
+                )
+
+                if isAddModeEnabled {
+                    Toggle("Draw Contour", isOn: $isContourDrawModeEnabled)
+                    Text(
+                        isContourDrawModeEnabled
+                            ? "Drag around a hold to draw its contour. Pinch to zoom. Release to save. Use Undo on canvas to step back."
+                            : "Tap to place a ring marker. Enable Draw Contour to trace hold shapes."
+                    )
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                } else {
+                    Text("Tap a hold to remove it.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                if !wall.holds.isEmpty {
+                    Button(role: .destructive) {
+                        isShowingDeleteAllHoldsConfirmation = true
+                    } label: {
+                        Label("Delete All Holds", systemImage: "trash")
+                    }
+                    .buttonStyle(.bordered)
+                }
             }
 
             Text("\(wall.holds.count) holds detected")
@@ -177,6 +233,46 @@ struct WallDetailView: View {
         Task {
             do {
                 try await store.addManualHold(wallID: wallID, at: point)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func handleContourDraw(_ points: [CGPoint]) {
+        guard isEditingHolds, isAddModeEnabled, isContourDrawModeEnabled else {
+            return
+        }
+
+        Task {
+            do {
+                try await store.addManualHoldContour(wallID: wallID, points: points)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func handleContourUndo() {
+        guard isEditingHolds, isAddModeEnabled, isContourDrawModeEnabled else {
+            return
+        }
+
+        Task {
+            do {
+                try await store.removeLastManualHold(wallID: wallID)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func deleteAllHolds() {
+        Task {
+            do {
+                try await store.removeAllHolds(wallID: wallID)
+                isContourDrawModeEnabled = false
+                isAddModeEnabled = false
             } catch {
                 errorMessage = error.localizedDescription
             }

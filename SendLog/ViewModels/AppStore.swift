@@ -128,31 +128,81 @@ final class AppStore: ObservableObject {
         try await persist()
     }
 
+    func removeAllHolds(wallID: UUID) async throws {
+        guard let index = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+        walls[index].holds = []
+        walls[index].updatedAt = Date()
+        try await persist()
+    }
+
+    func removeLastManualHold(wallID: UUID) async throws {
+        guard let index = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+        guard let lastIndex = walls[index].holds.lastIndex(where: { $0.source == .manual }) else {
+            return
+        }
+        walls[index].holds.remove(at: lastIndex)
+        walls[index].updatedAt = Date()
+        try await persist()
+    }
+
     func addManualHold(wallID: UUID, at normalizedPoint: CGPoint) async throws {
         guard let index = wallIndex(for: wallID) else {
             throw AppStoreError.wallNotFound
         }
-        guard let image = image(for: walls[index]) else {
-            throw AppStoreError.missingWallImage
+
+        let point = CGPoint(
+            x: min(max(0, normalizedPoint.x), 1),
+            y: min(max(0, normalizedPoint.y), 1)
+        )
+
+        let newHold = manualRingMarker(at: point)
+        walls[index].holds.append(newHold)
+        walls[index].updatedAt = Date()
+        try await persist()
+    }
+
+    func addManualHoldContour(wallID: UUID, points normalizedPoints: [CGPoint]) async throws {
+        guard let index = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
         }
 
-        if let segmented = try await detector.segmentHold(around: normalizedPoint, in: image) {
-            walls[index].holds.append(segmented)
-            walls[index].updatedAt = Date()
-            try await persist()
+        let cleaned = normalizedPoints
+            .map { point in
+                CGPoint(x: min(max(0, point.x), 1), y: min(max(0, point.y), 1))
+            }
+        guard cleaned.count >= 3 else {
             return
         }
 
-        let defaultSize: CGFloat = 0.08
+        let decimated = decimatedContour(cleaned, maxCount: 120)
+        let contour = decimated.map { point in
+            NormalizedPoint(x: point.x, y: point.y)
+        }
+
+        let minX = contour.map(\.x).min() ?? 0
+        let maxX = contour.map(\.x).max() ?? 1
+        let minY = contour.map(\.y).min() ?? 0
+        let maxY = contour.map(\.y).max() ?? 1
+
         let rect = NormalizedRect(
-            x: normalizedPoint.x - (defaultSize / 2),
-            y: normalizedPoint.y - (defaultSize / 2),
-            width: defaultSize,
-            height: defaultSize
+            x: minX,
+            y: minY,
+            width: max(0.01, maxX - minX),
+            height: max(0.01, maxY - minY)
         ).clamped()
 
-        let newHold = Hold(rect: rect, confidence: 1.0, source: .manual)
-        walls[index].holds.append(newHold)
+        let hold = Hold(
+            rect: rect,
+            contour: contour,
+            confidence: 0.85,
+            source: .manual
+        )
+
+        walls[index].holds.append(hold)
         walls[index].updatedAt = Date()
         try await persist()
     }
@@ -246,6 +296,64 @@ final class AppStore: ObservableObject {
 
     private func wallIndex(for wallID: UUID) -> Int? {
         walls.firstIndex { $0.id == wallID }
+    }
+
+    private func manualRingMarker(at normalizedPoint: CGPoint) -> Hold {
+        let markerSize: CGFloat = 0.05
+        let rect = NormalizedRect(
+            x: normalizedPoint.x - (markerSize / 2),
+            y: normalizedPoint.y - (markerSize / 2),
+            width: markerSize,
+            height: markerSize
+        ).clamped()
+
+        let contour = ringContour(around: normalizedPoint)
+        return Hold(
+            rect: rect,
+            contour: contour.isEmpty ? nil : contour,
+            confidence: 0.2,
+            source: .manual
+        )
+    }
+
+    private func ringContour(around normalizedPoint: CGPoint) -> [NormalizedPoint] {
+        let radius: CGFloat = 0.019
+        let pointCount = 18
+
+        var contour: [NormalizedPoint] = []
+        contour.reserveCapacity(pointCount)
+
+        for index in 0..<pointCount {
+            let angle = (-CGFloat.pi / 2) + (CGFloat(index) * (.pi * 2) / CGFloat(pointCount))
+            let contourPoint = NormalizedPoint(
+                x: normalizedPoint.x + (cos(angle) * radius),
+                y: normalizedPoint.y + (sin(angle) * radius)
+            ).clamped()
+
+            if contour.last != contourPoint {
+                contour.append(contourPoint)
+            }
+        }
+
+        return contour.count >= 3 ? contour : []
+    }
+
+    private func decimatedContour(_ points: [CGPoint], maxCount: Int) -> [CGPoint] {
+        guard maxCount > 2, points.count > maxCount else {
+            return points
+        }
+
+        var result: [CGPoint] = []
+        result.reserveCapacity(maxCount)
+        let step = Double(points.count - 1) / Double(maxCount - 1)
+        for index in 0..<maxCount {
+            let sourceIndex = min(
+                Int(round(Double(index) * step)),
+                points.count - 1
+            )
+            result.append(points[sourceIndex])
+        }
+        return result
     }
 
     private func persist() async throws {

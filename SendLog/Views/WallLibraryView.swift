@@ -72,7 +72,7 @@ struct WallLibraryView: View {
             .navigationDestination(for: UUID.self) { wallID in
                 WallDetailView(wallID: wallID)
             }
-            .sheet(isPresented: $isShowingCreateWall) {
+            .fullScreenCover(isPresented: $isShowingCreateWall) {
                 CreateWallSheet()
             }
             .confirmationDialog(

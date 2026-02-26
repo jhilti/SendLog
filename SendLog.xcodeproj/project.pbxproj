@@ -291,6 +291,8 @@
 				INFOPLIST_FILE = SendLog/Resources/Info.plist;
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save exported wall images and backups from SendLog.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Import wall photos to build and save boulder problems offline.";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -312,6 +314,8 @@
 				INFOPLIST_FILE = SendLog/Resources/Info.plist;
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save exported wall images and backups from SendLog.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Import wall photos to build and save boulder problems offline.";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

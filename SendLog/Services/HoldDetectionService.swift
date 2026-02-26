@@ -68,8 +68,8 @@ struct HoldDetectionService {
         return try await runInBackground {
             let candidates = try contourCandidates(
                 in: cgImage,
-                maximumImageDimension: 1800,
-                contrastAdjustments: [1.0, 1.35, 1.65],
+                maximumImageDimension: 1400,
+                contrastAdjustments: [1.0, 1.3],
                 darkOnLightModes: [false, true]
             )
             guard let best = bestSegmentationCandidate(around: point, from: candidates) else {
