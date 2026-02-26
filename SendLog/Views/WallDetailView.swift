@@ -44,7 +44,8 @@ struct WallDetailView: View {
                                 isZoomEnabled: true,
                                 isContourDrawEnabled: isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled,
                                 nearestSelectionEnabled: !isAddModeEnabled && !isContourDrawModeEnabled,
-                                showInlineContourUndoButton: false
+                                showInlineContourUndoButton: false,
+                                cornerRadius: 0
                             )
 
                             VStack(alignment: .leading, spacing: 16) {
@@ -81,6 +82,9 @@ struct WallDetailView: View {
                     }
                     .navigationTitle(wall.name)
                     .navigationBarTitleDisplayMode(.inline)
+                    .contentMargins(.top, 0, for: .scrollContent)
+                    .contentMargins(.top, 0, for: .scrollIndicators)
+                    .ignoresSafeArea(edges: .top)
                     .overlay(alignment: .bottomTrailing) {
                         if isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled {
                             Button {
