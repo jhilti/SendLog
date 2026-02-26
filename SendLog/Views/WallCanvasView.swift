@@ -9,9 +9,11 @@ struct WallCanvasView: View {
     var onEmptyImageTap: ((CGPoint) -> Void)?
     var onContourComplete: (([CGPoint]) -> Void)?
     var onContourUndo: (() -> Void)? = nil
-    var isZoomEnabled = false
+    var contourUndoRequestID: Int = 0
+    var isZoomEnabled = true
     var isContourDrawEnabled = false
     var nearestSelectionEnabled = true
+    var showInlineContourUndoButton = true
 
     @State private var zoomScale: CGFloat = 1
     @State private var storedZoomScale: CGFloat = 1
@@ -19,6 +21,8 @@ struct WallCanvasView: View {
     @State private var storedZoomOffset: CGSize = .zero
     @State private var draftContourPoints: [CGPoint] = []
     @State private var isMagnifying = false
+    @State private var lastTransformEndedAt: Date = .distantPast
+    @State private var isContourPanMode = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -91,10 +95,19 @@ struct WallCanvasView: View {
 
             Group {
                 if isContourDrawEnabled {
-                    baseCanvas
-                        .highPriorityGesture(contourDrawGesture(in: imageFrame))
-                        .simultaneousGesture(magnificationGesture(in: imageFrame))
-                        .simultaneousGesture(pinchPanGesture(in: imageFrame))
+                    if isContourPanMode {
+                        baseCanvas
+                            .highPriorityGesture(dragGesture(in: imageFrame))
+                            .simultaneousGesture(magnificationGesture(in: imageFrame))
+                            .simultaneousGesture(pinchPanGesture(in: imageFrame))
+                            .simultaneousGesture(contourModeToggleGesture)
+                    } else {
+                        baseCanvas
+                            .highPriorityGesture(contourDrawGesture(in: imageFrame))
+                            .simultaneousGesture(magnificationGesture(in: imageFrame))
+                            .simultaneousGesture(pinchPanGesture(in: imageFrame))
+                            .simultaneousGesture(contourModeToggleGesture)
+                    }
                 } else if isZoomEnabled {
                     baseCanvas
                         .highPriorityGesture(tapGesture(in: imageFrame))
@@ -111,18 +124,28 @@ struct WallCanvasView: View {
                 if !enabled {
                     resetZoom()
                 }
+                if !enabled {
+                    isContourPanMode = false
+                }
             }
             .onChange(of: isContourDrawEnabled) { _, enabled in
                 if !enabled {
                     draftContourPoints = []
+                    isContourPanMode = false
                 }
+            }
+            .onChange(of: contourUndoRequestID) { _, _ in
+                guard isContourDrawEnabled else {
+                    return
+                }
+                undoLastContourStep()
             }
         }
         .frame(maxWidth: .infinity)
         .aspectRatio(layoutImageSize.width / max(layoutImageSize.height, 1), contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay(alignment: .topLeading) {
-            if isContourDrawEnabled {
+            if isContourDrawEnabled && showInlineContourUndoButton {
                 Button {
                     undoLastContourStep()
                 } label: {
@@ -134,6 +157,16 @@ struct WallCanvasView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(8)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if isContourDrawEnabled {
+                Text(isContourPanMode ? "Move" : "Draw")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(8)
             }
         }
     }
@@ -185,6 +218,9 @@ struct WallCanvasView: View {
                 guard !isMagnifying else {
                     return
                 }
+                guard Date().timeIntervalSince(lastTransformEndedAt) > 0.08 else {
+                    return
+                }
 
                 let location = locationInUnscaledCanvas(from: value.location, imageFrame: imageFrame)
                 guard imageFrame.contains(location) else {
@@ -201,7 +237,24 @@ struct WallCanvasView: View {
                 guard !isMagnifying else {
                     return
                 }
+                guard Date().timeIntervalSince(lastTransformEndedAt) > 0.08 else {
+                    draftContourPoints = []
+                    return
+                }
                 completeContourIfPossible()
+            }
+    }
+
+    private var contourModeToggleGesture: some Gesture {
+        TapGesture(count: 2)
+            .onEnded {
+                guard isContourDrawEnabled else {
+                    return
+                }
+                isContourPanMode.toggle()
+                if isContourPanMode {
+                    draftContourPoints = []
+                }
             }
     }
 
@@ -217,6 +270,87 @@ struct WallCanvasView: View {
                     height: storedZoomOffset.height + value.translation.height
                 )
                 zoomOffset = clampedOffset(proposed, for: zoomScale, imageFrame: imageFrame)
+            }
+            .onEnded { value in
+                guard isZoomEnabled, isContourDrawEnabled, zoomScale > 1.01 else {
+                    return
+                }
+
+                let proposed = CGSize(
+                    width: storedZoomOffset.width + value.translation.width,
+                    height: storedZoomOffset.height + value.translation.height
+                )
+                zoomOffset = clampedOffset(proposed, for: zoomScale, imageFrame: imageFrame)
+                storedZoomOffset = zoomOffset
+                lastTransformEndedAt = Date()
+            }
+    }
+
+    private func dragGesture(in imageFrame: CGRect) -> some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .local)
+            .onChanged { value in
+                guard isZoomEnabled, zoomScale > 1.01 else {
+                    return
+                }
+                guard !isContourDrawEnabled || isContourPanMode else {
+                    return
+                }
+
+                let proposed = CGSize(
+                    width: storedZoomOffset.width + value.translation.width,
+                    height: storedZoomOffset.height + value.translation.height
+                )
+                zoomOffset = clampedOffset(proposed, for: zoomScale, imageFrame: imageFrame)
+            }
+            .onEnded { value in
+                guard isZoomEnabled else {
+                    return
+                }
+                guard !isContourDrawEnabled || isContourPanMode else {
+                    return
+                }
+                guard zoomScale > 1.01 else {
+                    resetZoom()
+                    return
+                }
+
+                let proposed = CGSize(
+                    width: storedZoomOffset.width + value.translation.width,
+                    height: storedZoomOffset.height + value.translation.height
+                )
+                zoomOffset = clampedOffset(proposed, for: zoomScale, imageFrame: imageFrame)
+                storedZoomOffset = zoomOffset
+                lastTransformEndedAt = Date()
+            }
+    }
+
+    private func magnificationGesture(in imageFrame: CGRect) -> some Gesture {
+        MagnificationGesture()
+            .onChanged { value in
+                guard isZoomEnabled else {
+                    return
+                }
+
+                isMagnifying = true
+                let proposedScale = clampedScale(storedZoomScale * value)
+                zoomScale = proposedScale
+                zoomOffset = clampedOffset(zoomOffset, for: proposedScale, imageFrame: imageFrame)
+            }
+            .onEnded { value in
+                guard isZoomEnabled else {
+                    return
+                }
+
+                isMagnifying = false
+                zoomScale = clampedScale(storedZoomScale * value)
+                zoomOffset = clampedOffset(zoomOffset, for: zoomScale, imageFrame: imageFrame)
+                storedZoomScale = zoomScale
+                storedZoomOffset = zoomOffset
+                lastTransformEndedAt = Date()
+
+                if zoomScale <= 1.01 {
+                    resetZoom()
+                }
             }
     }
 
@@ -279,66 +413,6 @@ struct WallCanvasView: View {
             return nil
         }
         return nearest.hold
-    }
-
-    private func dragGesture(in imageFrame: CGRect) -> some Gesture {
-        DragGesture(minimumDistance: 8)
-            .onChanged { value in
-                guard isZoomEnabled, zoomScale > 1.01 else {
-                    return
-                }
-
-                let proposed = CGSize(
-                    width: storedZoomOffset.width + value.translation.width,
-                    height: storedZoomOffset.height + value.translation.height
-                )
-                zoomOffset = clampedOffset(proposed, for: zoomScale, imageFrame: imageFrame)
-            }
-            .onEnded { value in
-                guard isZoomEnabled else {
-                    return
-                }
-                guard zoomScale > 1.01 else {
-                    resetZoom()
-                    return
-                }
-
-                let proposed = CGSize(
-                    width: storedZoomOffset.width + value.translation.width,
-                    height: storedZoomOffset.height + value.translation.height
-                )
-                zoomOffset = clampedOffset(proposed, for: zoomScale, imageFrame: imageFrame)
-                storedZoomOffset = zoomOffset
-            }
-    }
-
-    private func magnificationGesture(in imageFrame: CGRect) -> some Gesture {
-        MagnificationGesture()
-            .onChanged { value in
-                guard isZoomEnabled else {
-                    return
-                }
-
-                isMagnifying = true
-                let proposedScale = clampedScale(storedZoomScale * value)
-                zoomScale = proposedScale
-                zoomOffset = clampedOffset(zoomOffset, for: proposedScale, imageFrame: imageFrame)
-            }
-            .onEnded { value in
-                guard isZoomEnabled else {
-                    return
-                }
-
-                isMagnifying = false
-                zoomScale = clampedScale(storedZoomScale * value)
-                zoomOffset = clampedOffset(zoomOffset, for: zoomScale, imageFrame: imageFrame)
-                storedZoomScale = zoomScale
-                storedZoomOffset = zoomOffset
-
-                if zoomScale <= 1.01 {
-                    resetZoom()
-                }
-            }
     }
 
     private func locationInUnscaledCanvas(from location: CGPoint, imageFrame: CGRect) -> CGPoint {
