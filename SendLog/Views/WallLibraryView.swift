@@ -27,6 +27,7 @@ struct WallLibraryView: View {
                 content
             }
             .navigationTitle("SendLog")
+            .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, prompt: selectedTab.searchPrompt)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
