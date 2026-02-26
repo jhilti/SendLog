@@ -14,6 +14,7 @@ struct WallCanvasView: View {
     var isContourDrawEnabled = false
     var nearestSelectionEnabled = true
     var showInlineContourUndoButton = true
+    var cornerRadius: CGFloat = 14
 
     @State private var zoomScale: CGFloat = 1
     @State private var storedZoomScale: CGFloat = 1
@@ -153,7 +154,7 @@ struct WallCanvasView: View {
         }
         .frame(maxWidth: .infinity)
         .aspectRatio(layoutImageSize.width / max(layoutImageSize.height, 1), contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .overlay(alignment: .topLeading) {
             if isContourDrawEnabled && showInlineContourUndoButton {
                 Button {
