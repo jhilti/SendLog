@@ -31,7 +31,7 @@ struct WallCanvasView: View {
             let displayScale = isZoomEnabled ? zoomScale : 1
             let displayOffset = isZoomEnabled ? zoomOffset : .zero
             let baseCanvas = ZStack {
-                Color(.secondarySystemBackground)
+                Color.black
 
                 ZStack {
                     Image(uiImage: image)
@@ -96,23 +96,33 @@ struct WallCanvasView: View {
             Group {
                 if isContourDrawEnabled {
                     if isContourPanMode {
-                        baseCanvas
-                            .highPriorityGesture(dragGesture(in: imageFrame))
-                            .simultaneousGesture(magnificationGesture(in: imageFrame))
-                            .simultaneousGesture(pinchPanGesture(in: imageFrame))
-                            .simultaneousGesture(contourModeToggleGesture)
+                        if zoomScale > 1.01 {
+                            baseCanvas
+                                .simultaneousGesture(dragGesture(in: imageFrame))
+                                .simultaneousGesture(magnificationGesture(in: imageFrame))
+                                .simultaneousGesture(contourModeToggleGesture)
+                        } else {
+                            baseCanvas
+                                .simultaneousGesture(magnificationGesture(in: imageFrame))
+                                .simultaneousGesture(contourModeToggleGesture)
+                        }
                     } else {
                         baseCanvas
                             .highPriorityGesture(contourDrawGesture(in: imageFrame))
                             .simultaneousGesture(magnificationGesture(in: imageFrame))
-                            .simultaneousGesture(pinchPanGesture(in: imageFrame))
                             .simultaneousGesture(contourModeToggleGesture)
                     }
                 } else if isZoomEnabled {
-                    baseCanvas
-                        .highPriorityGesture(tapGesture(in: imageFrame))
-                        .simultaneousGesture(dragGesture(in: imageFrame))
-                        .simultaneousGesture(magnificationGesture(in: imageFrame))
+                    if zoomScale > 1.01 {
+                        baseCanvas
+                            .highPriorityGesture(tapGesture(in: imageFrame))
+                            .simultaneousGesture(dragGesture(in: imageFrame))
+                            .simultaneousGesture(magnificationGesture(in: imageFrame))
+                    } else {
+                        baseCanvas
+                            .highPriorityGesture(tapGesture(in: imageFrame))
+                            .simultaneousGesture(magnificationGesture(in: imageFrame))
+                    }
                 } else if hasTapHandlers {
                     baseCanvas
                         .highPriorityGesture(tapGesture(in: imageFrame))
@@ -258,34 +268,6 @@ struct WallCanvasView: View {
             }
     }
 
-    private func pinchPanGesture(in imageFrame: CGRect) -> some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .local)
-            .onChanged { value in
-                guard isZoomEnabled, isContourDrawEnabled, isMagnifying, zoomScale > 1.01 else {
-                    return
-                }
-
-                let proposed = CGSize(
-                    width: storedZoomOffset.width + value.translation.width,
-                    height: storedZoomOffset.height + value.translation.height
-                )
-                zoomOffset = clampedOffset(proposed, for: zoomScale, imageFrame: imageFrame)
-            }
-            .onEnded { value in
-                guard isZoomEnabled, isContourDrawEnabled, zoomScale > 1.01 else {
-                    return
-                }
-
-                let proposed = CGSize(
-                    width: storedZoomOffset.width + value.translation.width,
-                    height: storedZoomOffset.height + value.translation.height
-                )
-                zoomOffset = clampedOffset(proposed, for: zoomScale, imageFrame: imageFrame)
-                storedZoomOffset = zoomOffset
-                lastTransformEndedAt = Date()
-            }
-    }
-
     private func dragGesture(in imageFrame: CGRect) -> some Gesture {
         DragGesture(minimumDistance: 8, coordinateSpace: .local)
             .onChanged { value in
@@ -293,6 +275,9 @@ struct WallCanvasView: View {
                     return
                 }
                 guard !isContourDrawEnabled || isContourPanMode else {
+                    return
+                }
+                guard canPanImage(for: value.translation, imageFrame: imageFrame) else {
                     return
                 }
 
@@ -311,6 +296,9 @@ struct WallCanvasView: View {
                 }
                 guard zoomScale > 1.01 else {
                     resetZoom()
+                    return
+                }
+                guard canPanImage(for: value.translation, imageFrame: imageFrame) else {
                     return
                 }
 
@@ -465,6 +453,33 @@ struct WallCanvasView: View {
 
     private func clampedScale(_ scale: CGFloat) -> CGFloat {
         min(max(scale, 1), 4)
+    }
+
+    private func canPanImage(for translation: CGSize, imageFrame: CGRect) -> Bool {
+        guard zoomScale > 1.01 else {
+            return false
+        }
+
+        let proposed = CGSize(
+            width: storedZoomOffset.width + translation.width,
+            height: storedZoomOffset.height + translation.height
+        )
+        let clamped = clampedOffset(proposed, for: zoomScale, imageFrame: imageFrame)
+
+        let deltaX = abs(clamped.width - storedZoomOffset.width)
+        let deltaY = abs(clamped.height - storedZoomOffset.height)
+        let minMovement: CGFloat = 0.2
+        let intentThreshold: CGFloat = 1.5
+
+        if abs(translation.height) > abs(translation.width), abs(translation.height) > intentThreshold {
+            return deltaY > minMovement
+        }
+
+        if abs(translation.width) > abs(translation.height), abs(translation.width) > intentThreshold {
+            return deltaX > minMovement
+        }
+
+        return deltaX > minMovement || deltaY > minMovement
     }
 
     private func clampedOffset(_ offset: CGSize, for scale: CGFloat, imageFrame: CGRect) -> CGSize {
