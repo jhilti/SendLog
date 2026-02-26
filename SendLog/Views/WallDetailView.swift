@@ -11,6 +11,7 @@ struct WallDetailView: View {
     @State private var isEditingHolds = false
     @State private var isAddModeEnabled = false
     @State private var isContourDrawModeEnabled = false
+    @State private var contourUndoRequestID = 0
     @State private var isShowingDeleteAllHoldsConfirmation = false
     @State private var previewBoulder: Boulder?
     @State private var errorMessage: String?
@@ -36,9 +37,11 @@ struct WallDetailView: View {
                             onContourUndo: (isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled) ? {
                                 handleContourUndo()
                             } : nil,
-                            isZoomEnabled: isEditingHolds && isAddModeEnabled,
+                            contourUndoRequestID: contourUndoRequestID,
+                            isZoomEnabled: true,
                             isContourDrawEnabled: isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled,
-                            nearestSelectionEnabled: !isAddModeEnabled && !isContourDrawModeEnabled
+                            nearestSelectionEnabled: !isAddModeEnabled && !isContourDrawModeEnabled,
+                            showInlineContourUndoButton: false
                         )
 
                         controlPanel(for: wall)
@@ -73,6 +76,22 @@ struct WallDetailView: View {
                 }
                 .navigationTitle(wall.name)
                 .navigationBarTitleDisplayMode(.inline)
+                .overlay(alignment: .bottomTrailing) {
+                    if isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled {
+                        Button {
+                            contourUndoRequestID += 1
+                        } label: {
+                            Label("Undo", systemImage: "arrow.uturn.backward")
+                                .font(.headline.weight(.semibold))
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
+                                .background(.ultraThinMaterial, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 14)
+                    }
+                }
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
@@ -172,7 +191,7 @@ struct WallDetailView: View {
                     Toggle("Draw Contour", isOn: $isContourDrawModeEnabled)
                     Text(
                         isContourDrawModeEnabled
-                            ? "Drag around a hold to draw its contour. Pinch to zoom. Release to save. Use Undo on canvas to step back."
+                            ? "Draw around a hold with one finger. Double-tap to toggle Move mode, then drag to pan. Pinch to zoom. Release to save."
                             : "Tap to place a ring marker. Enable Draw Contour to trace hold shapes."
                     )
                     .font(.footnote)
