@@ -17,134 +17,140 @@ struct WallDetailView: View {
     @State private var errorMessage: String?
 
     var body: some View {
-        Group {
-            if let wall = store.wall(withID: wallID), let image = store.image(for: wall) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        WallCanvasView(
-                            image: image,
-                            holds: wall.holds,
-                            selectedHoldIDs: [],
-                            onHoldTap: (isEditingHolds && !isAddModeEnabled) ? { hold in
-                                handleHoldTap(hold)
-                            } : nil,
-                            onEmptyImageTap: (isEditingHolds && isAddModeEnabled && !isContourDrawModeEnabled) ? { point in
-                                handleImageTap(point)
-                            } : nil,
-                            onContourComplete: (isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled) ? { points in
-                                handleContourDraw(points)
-                            } : nil,
-                            onContourUndo: (isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled) ? {
-                                handleContourUndo()
-                            } : nil,
-                            contourUndoRequestID: contourUndoRequestID,
-                            isZoomEnabled: true,
-                            isContourDrawEnabled: isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled,
-                            nearestSelectionEnabled: !isAddModeEnabled && !isContourDrawModeEnabled,
-                            showInlineContourUndoButton: false
-                        )
+        ZStack {
+            Color.black.ignoresSafeArea()
 
-                        controlPanel(for: wall)
+            Group {
+                if let wall = store.wall(withID: wallID), let image = store.image(for: wall) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            WallCanvasView(
+                                image: image,
+                                holds: wall.holds,
+                                selectedHoldIDs: [],
+                                onHoldTap: (isEditingHolds && !isAddModeEnabled) ? { hold in
+                                    handleHoldTap(hold)
+                                } : nil,
+                                onEmptyImageTap: (isEditingHolds && isAddModeEnabled && !isContourDrawModeEnabled) ? { point in
+                                    handleImageTap(point)
+                                } : nil,
+                                onContourComplete: (isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled) ? { points in
+                                    handleContourDraw(points)
+                                } : nil,
+                                onContourUndo: (isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled) ? {
+                                    handleContourUndo()
+                                } : nil,
+                                contourUndoRequestID: contourUndoRequestID,
+                                isZoomEnabled: true,
+                                isContourDrawEnabled: isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled,
+                                nearestSelectionEnabled: !isAddModeEnabled && !isContourDrawModeEnabled,
+                                showInlineContourUndoButton: false
+                            )
 
-                        Text("Problems")
-                            .font(.title3.weight(.semibold))
-                        Text("Tap a problem to preview its selected holds.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 16) {
+                                controlPanel(for: wall)
 
-                        if wall.boulders.isEmpty {
-                            Text("No saved problems yet.")
-                                .foregroundStyle(.secondary)
-                        } else {
-                            VStack(spacing: 10) {
-                                ForEach(wall.boulders) { boulder in
-                                    BoulderRow(
-                                        boulder: boulder,
-                                        onSelect: {
-                                            previewBoulder = boulder
-                                        },
-                                        onDelete: {
-                                            deleteBoulder(boulderID: boulder.id)
+                                Text("Problems")
+                                    .font(.title3.weight(.semibold))
+                                Text("Tap a problem to preview its selected holds.")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+
+                                if wall.boulders.isEmpty {
+                                    Text("No saved problems yet.")
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    VStack(spacing: 10) {
+                                        ForEach(wall.boulders) { boulder in
+                                            BoulderRow(
+                                                boulder: boulder,
+                                                onSelect: {
+                                                    previewBoulder = boulder
+                                                },
+                                                onDelete: {
+                                                    deleteBoulder(boulderID: boulder.id)
+                                                }
+                                            )
                                         }
-                                    )
+                                    }
                                 }
                             }
+                            .padding(.horizontal)
+                        }
+                        .padding(.bottom, 12)
+                    }
+                    .navigationTitle(wall.name)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .overlay(alignment: .bottomTrailing) {
+                        if isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled {
+                            Button {
+                                contourUndoRequestID += 1
+                            } label: {
+                                Label("Undo", systemImage: "arrow.uturn.backward")
+                                    .font(.headline.weight(.semibold))
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 12)
+                                    .background(.ultraThinMaterial, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 14)
                         }
                     }
-                    .padding(.horizontal)
-                    .padding(.bottom, 12)
-                }
-                .navigationTitle(wall.name)
-                .navigationBarTitleDisplayMode(.inline)
-                .overlay(alignment: .bottomTrailing) {
-                    if isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled {
-                        Button {
-                            contourUndoRequestID += 1
-                        } label: {
-                            Label("Undo", systemImage: "arrow.uturn.backward")
-                                .font(.headline.weight(.semibold))
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 12)
-                                .background(.ultraThinMaterial, in: Capsule())
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                isCreatingBoulder = true
+                            } label: {
+                                Label("New Problem", systemImage: "plus")
+                            }
+                            .disabled(wall.holds.isEmpty)
                         }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 14)
                     }
-                }
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            isCreatingBoulder = true
-                        } label: {
-                            Label("New Problem", systemImage: "plus")
+                    .fullScreenCover(isPresented: $isCreatingBoulder) {
+                        BoulderComposerView(wallID: wallID)
+                    }
+                    .fullScreenCover(item: $previewBoulder) { boulder in
+                        if let wall = store.wall(withID: wallID),
+                           let image = store.image(for: wall) {
+                            BoulderPreviewSheet(wall: wall, image: image, boulder: boulder)
+                        } else {
+                            ContentUnavailableView(
+                                "Wall Not Available",
+                                systemImage: "exclamationmark.triangle",
+                                description: Text("Could not load this wall.")
+                            )
                         }
-                        .disabled(wall.holds.isEmpty)
                     }
-                }
-                .fullScreenCover(isPresented: $isCreatingBoulder) {
-                    BoulderComposerView(wallID: wallID)
-                }
-                .fullScreenCover(item: $previewBoulder) { boulder in
-                    if let wall = store.wall(withID: wallID),
-                       let image = store.image(for: wall) {
-                        BoulderPreviewSheet(wall: wall, image: image, boulder: boulder)
-                    } else {
-                        ContentUnavailableView(
-                            "Wall Not Available",
-                            systemImage: "exclamationmark.triangle",
-                            description: Text("Could not load this wall.")
-                        )
+                    .confirmationDialog(
+                        "Delete all holds on this wall?",
+                        isPresented: $isShowingDeleteAllHoldsConfirmation,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Delete All Holds", role: .destructive) {
+                            deleteAllHolds()
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("This removes every detected and manual hold marker.")
                     }
-                }
-                .confirmationDialog(
-                    "Delete all holds on this wall?",
-                    isPresented: $isShowingDeleteAllHoldsConfirmation,
-                    titleVisibility: .visible
-                ) {
-                    Button("Delete All Holds", role: .destructive) {
-                        deleteAllHolds()
+                    .alert("Error", isPresented: Binding(
+                        get: { errorMessage != nil },
+                        set: { newValue in
+                            if !newValue { errorMessage = nil }
+                        }
+                    )) {
+                        Button("OK", role: .cancel) {}
+                    } message: {
+                        Text(errorMessage ?? "Unknown error")
                     }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("This removes every detected and manual hold marker.")
+                } else {
+                    ContentUnavailableView(
+                        "Wall Not Found",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text("This wall no longer exists or the image could not be loaded.")
+                    )
                 }
-                .alert("Error", isPresented: Binding(
-                    get: { errorMessage != nil },
-                    set: { newValue in
-                        if !newValue { errorMessage = nil }
-                    }
-                )) {
-                    Button("OK", role: .cancel) {}
-                } message: {
-                    Text(errorMessage ?? "Unknown error")
-                }
-            } else {
-                ContentUnavailableView(
-                    "Wall Not Found",
-                    systemImage: "exclamationmark.triangle",
-                    description: Text("This wall no longer exists or the image could not be loaded.")
-                )
             }
         }
     }
