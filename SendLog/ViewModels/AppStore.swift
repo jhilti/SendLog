@@ -6,6 +6,7 @@ final class AppStore: ObservableObject {
     enum AppStoreError: LocalizedError {
         case invalidImage
         case wallNotFound
+        case boulderNotFound
         case missingWallImage
         case invalidBackupData
         case unsupportedBackupVersion
@@ -16,6 +17,8 @@ final class AppStore: ObservableObject {
                 return "The selected image data is invalid."
             case .wallNotFound:
                 return "Could not find this wall."
+            case .boulderNotFound:
+                return "Could not find this problem."
             case .missingWallImage:
                 return "The wall image is missing from local storage."
             case .invalidBackupData:
@@ -238,6 +241,58 @@ final class AppStore: ObservableObject {
 
         walls[index].boulders.removeAll { $0.id == boulderID }
         walls[index].updatedAt = Date()
+        try await persist()
+    }
+
+    func updateBoulder(
+        wallID: UUID,
+        boulderID: UUID,
+        name: String,
+        grade: String,
+        notes: String,
+        holdIDs: [UUID]
+    ) async throws {
+        guard let wallIdx = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+        guard let boulderIdx = walls[wallIdx].boulders.firstIndex(where: { $0.id == boulderID }) else {
+            throw AppStoreError.boulderNotFound
+        }
+
+        walls[wallIdx].boulders[boulderIdx].name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        walls[wallIdx].boulders[boulderIdx].grade = grade.trimmingCharacters(in: .whitespacesAndNewlines)
+        walls[wallIdx].boulders[boulderIdx].notes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        walls[wallIdx].boulders[boulderIdx].holdIDs = holdIDs
+        walls[wallIdx].updatedAt = Date()
+        try await persist()
+    }
+
+    func incrementBoulderTick(wallID: UUID, boulderID: UUID) async throws {
+        guard let wallIdx = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+        guard let boulderIdx = walls[wallIdx].boulders.firstIndex(where: { $0.id == boulderID }) else {
+            throw AppStoreError.boulderNotFound
+        }
+
+        walls[wallIdx].boulders[boulderIdx].tickCount += 1
+        walls[wallIdx].updatedAt = Date()
+        try await persist()
+    }
+
+    func decrementBoulderTick(wallID: UUID, boulderID: UUID) async throws {
+        guard let wallIdx = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+        guard let boulderIdx = walls[wallIdx].boulders.firstIndex(where: { $0.id == boulderID }) else {
+            throw AppStoreError.boulderNotFound
+        }
+
+        guard walls[wallIdx].boulders[boulderIdx].tickCount > 0 else {
+            return
+        }
+        walls[wallIdx].boulders[boulderIdx].tickCount -= 1
+        walls[wallIdx].updatedAt = Date()
         try await persist()
     }
 
