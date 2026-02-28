@@ -47,24 +47,27 @@ struct WallCanvasView: View {
                             let isManualMarker = hold.source == .manual
                                 && hold.confidence <= 0.3
                                 && (hold.contour?.count ?? 0) >= 10
-                            let strokeColor: Color
-                            if isSelected {
-                                strokeColor = .blue
-                            } else if isManualMarker {
-                                strokeColor = .orange.opacity(0.38)
-                            } else {
-                                strokeColor = .orange
-                            }
                             let path = holdPath(for: hold, in: imageFrame)
+                            let lineWidth: CGFloat = isSelected ? 2.0 : (isManualMarker ? 1.3 : 1.0)
 
-                            if isSelected && !isManualMarker {
-                                context.fill(path, with: .color(strokeColor.opacity(0.35)))
+                            if isSelected {
+                                if !isManualMarker {
+                                    context.fill(path, with: .color(.blue.opacity(0.18)))
+                                }
+
+                                // Add a bright blue glow for selected holds.
+                                context.drawLayer { layerContext in
+                                    layerContext.addFilter(.shadow(color: .blue.opacity(0.95), radius: 8, x: 0, y: 0))
+                                    layerContext.stroke(path, with: .color(.blue.opacity(0.98)), lineWidth: lineWidth)
+                                }
+
+                                context.stroke(path, with: .color(.cyan.opacity(0.85)), lineWidth: max(0.7, lineWidth * 0.5))
+                            } else {
+                                let strokeColor: Color = isManualMarker
+                                    ? .orange.opacity(0.2)
+                                    : .orange.opacity(0.28)
+                                context.stroke(path, with: .color(strokeColor), lineWidth: lineWidth)
                             }
-                            context.stroke(
-                                path,
-                                with: .color(strokeColor),
-                                lineWidth: isSelected ? 4 : (isManualMarker ? 2.6 : 2)
-                            )
                         }
 
                         if draftContourPoints.count >= 2 {
@@ -74,7 +77,7 @@ struct WallCanvasView: View {
                             for point in draftContourPoints.dropFirst() {
                                 draftPath.addLine(to: pointFromNormalized(point, in: imageFrame))
                             }
-                            context.stroke(draftPath, with: .color(.orange.opacity(0.85)), lineWidth: 2.5)
+                            context.stroke(draftPath, with: .color(.orange.opacity(0.35)), lineWidth: 1.25)
                         }
 
                         if let lastPoint = draftContourPoints.last {
@@ -85,7 +88,7 @@ struct WallCanvasView: View {
                                 width: 8,
                                 height: 8
                             )
-                            context.fill(Path(ellipseIn: markerRect), with: .color(.orange.opacity(0.9)))
+                            context.fill(Path(ellipseIn: markerRect), with: .color(.orange.opacity(0.45)))
                         }
                     }
                 }
