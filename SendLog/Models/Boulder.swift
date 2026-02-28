@@ -7,7 +7,19 @@ struct Boulder: Identifiable, Codable, Hashable {
     var grade: String
     var notes: String
     var holdIDs: [UUID]
+    var tickCount: Int
     let createdAt: Date
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case wallID
+        case name
+        case grade
+        case notes
+        case holdIDs
+        case tickCount
+        case createdAt
+    }
 
     init(
         id: UUID = UUID(),
@@ -16,6 +28,7 @@ struct Boulder: Identifiable, Codable, Hashable {
         grade: String,
         notes: String,
         holdIDs: [UUID],
+        tickCount: Int = 0,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -24,6 +37,31 @@ struct Boulder: Identifiable, Codable, Hashable {
         self.grade = grade
         self.notes = notes
         self.holdIDs = holdIDs
+        self.tickCount = max(0, tickCount)
         self.createdAt = createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        wallID = try container.decode(UUID.self, forKey: .wallID)
+        name = try container.decode(String.self, forKey: .name)
+        grade = try container.decode(String.self, forKey: .grade)
+        notes = try container.decode(String.self, forKey: .notes)
+        holdIDs = try container.decode([UUID].self, forKey: .holdIDs)
+        tickCount = max(0, try container.decodeIfPresent(Int.self, forKey: .tickCount) ?? 0)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(wallID, forKey: .wallID)
+        try container.encode(name, forKey: .name)
+        try container.encode(grade, forKey: .grade)
+        try container.encode(notes, forKey: .notes)
+        try container.encode(holdIDs, forKey: .holdIDs)
+        try container.encode(tickCount, forKey: .tickCount)
+        try container.encode(createdAt, forKey: .createdAt)
     }
 }
