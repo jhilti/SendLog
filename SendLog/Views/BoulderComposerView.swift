@@ -5,13 +5,31 @@ struct BoulderComposerView: View {
     @Environment(\.dismiss) private var dismiss
 
     let wallID: UUID
+    let editingBoulder: Boulder?
 
-    @State private var selectedHoldIDs: Set<UUID> = []
-    @State private var name = ""
-    @State private var selectedGrade: ClimbingGrade = .sixA
-    @State private var notes = ""
+    @State private var selectedHoldIDs: Set<UUID>
+    @State private var name: String
+    @State private var selectedGrade: ClimbingGrade
+    @State private var notes: String
     @State private var isSaving = false
     @State private var errorMessage: String?
+
+    init(wallID: UUID, editingBoulder: Boulder? = nil) {
+        self.wallID = wallID
+        self.editingBoulder = editingBoulder
+
+        if let editingBoulder {
+            _selectedHoldIDs = State(initialValue: Set(editingBoulder.holdIDs))
+            _name = State(initialValue: editingBoulder.name)
+            _selectedGrade = State(initialValue: Self.grade(from: editingBoulder.grade))
+            _notes = State(initialValue: editingBoulder.notes)
+        } else {
+            _selectedHoldIDs = State(initialValue: [])
+            _name = State(initialValue: "")
+            _selectedGrade = State(initialValue: .sixA)
+            _notes = State(initialValue: "")
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -65,7 +83,7 @@ struct BoulderComposerView: View {
                     )
                 }
             }
-            .navigationTitle("New Problem")
+            .navigationTitle(editingBoulder == nil ? "New Problem" : "Edit Problem")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -74,7 +92,7 @@ struct BoulderComposerView: View {
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(isSaving ? "Saving..." : "Save") {
+                    Button(saveButtonTitle) {
                         save()
                     }
                     .disabled(!canSave)
@@ -83,10 +101,21 @@ struct BoulderComposerView: View {
         }
     }
 
+    private static func grade(from rawValue: String) -> ClimbingGrade {
+        ClimbingGrade.allCases.first(where: { $0.rawValue == rawValue }) ?? .sixA
+    }
+
     private var canSave: Bool {
         !isSaving
             && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !selectedHoldIDs.isEmpty
+    }
+
+    private var saveButtonTitle: String {
+        if isSaving {
+            return editingBoulder == nil ? "Saving..." : "Updating..."
+        }
+        return editingBoulder == nil ? "Save" : "Update"
     }
 
     private func toggleSelection(for holdID: UUID) {
@@ -103,13 +132,24 @@ struct BoulderComposerView: View {
         Task {
             do {
                 let orderedIDs = selectedHoldIDs.sorted { $0.uuidString < $1.uuidString }
-                try await store.saveBoulder(
-                    wallID: wallID,
-                    name: name,
-                    grade: selectedGrade.rawValue,
-                    notes: notes,
-                    holdIDs: orderedIDs
-                )
+                if let editingBoulder {
+                    try await store.updateBoulder(
+                        wallID: wallID,
+                        boulderID: editingBoulder.id,
+                        name: name,
+                        grade: selectedGrade.rawValue,
+                        notes: notes,
+                        holdIDs: orderedIDs
+                    )
+                } else {
+                    try await store.saveBoulder(
+                        wallID: wallID,
+                        name: name,
+                        grade: selectedGrade.rawValue,
+                        notes: notes,
+                        holdIDs: orderedIDs
+                    )
+                }
                 dismiss()
             } catch {
                 errorMessage = error.localizedDescription
