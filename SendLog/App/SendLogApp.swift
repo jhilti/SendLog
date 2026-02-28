@@ -8,6 +8,7 @@ struct SendLogApp: App {
         WindowGroup {
             WallLibraryView()
                 .environmentObject(store)
+                .ignoresSafeArea(.container, edges: [.top, .bottom])
         }
     }
 }
