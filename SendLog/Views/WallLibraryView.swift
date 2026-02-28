@@ -337,6 +337,9 @@ private struct ProblemLibraryRow: View {
                 Text(entry.boulder.grade)
                     .font(.subheadline.weight(.semibold))
             }
+            Text("\(entry.boulder.holdIDs.count) holds • \(entry.boulder.tickCount) ticks")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
             Text("Wall: \(entry.wallName)")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
