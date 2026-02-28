@@ -14,6 +14,7 @@ struct WallDetailView: View {
     @State private var contourUndoRequestID = 0
     @State private var isShowingDeleteAllHoldsConfirmation = false
     @State private var previewBoulder: Boulder?
+    @State private var editingBoulder: Boulder?
     @State private var errorMessage: String?
 
     var body: some View {
@@ -68,6 +69,9 @@ struct WallDetailView: View {
                                                 onSelect: {
                                                     previewBoulder = boulder
                                                 },
+                                                onEdit: {
+                                                    editingBoulder = boulder
+                                                },
                                                 onDelete: {
                                                     deleteBoulder(boulderID: boulder.id)
                                                 }
@@ -113,6 +117,9 @@ struct WallDetailView: View {
                     }
                     .fullScreenCover(isPresented: $isCreatingBoulder) {
                         BoulderComposerView(wallID: wallID)
+                    }
+                    .fullScreenCover(item: $editingBoulder) { boulder in
+                        BoulderComposerView(wallID: wallID, editingBoulder: boulder)
                     }
                     .fullScreenCover(item: $previewBoulder) { boulder in
                         if let wall = store.wall(withID: wallID),
@@ -322,6 +329,7 @@ struct WallDetailView: View {
 private struct BoulderRow: View {
     let boulder: Boulder
     let onSelect: () -> Void
+    let onEdit: () -> Void
     let onDelete: () -> Void
 
     private static let dateFormatter: DateFormatter = {
@@ -336,7 +344,7 @@ private struct BoulderRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(boulder.name)
                     .font(.headline)
-                Text("\(boulder.grade) • \(boulder.holdIDs.count) holds")
+                Text("\(boulder.grade) • \(boulder.holdIDs.count) holds • \(boulder.tickCount) ticks")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 if !boulder.notes.isEmpty {
@@ -352,6 +360,11 @@ private struct BoulderRow: View {
 
             Spacer()
 
+            Button(action: onEdit) {
+                Image(systemName: "pencil")
+            }
+            .buttonStyle(.borderless)
+
             Button(role: .destructive, action: onDelete) {
                 Image(systemName: "trash")
             }
@@ -365,11 +378,22 @@ private struct BoulderRow: View {
 }
 
 private struct BoulderPreviewSheet: View {
+    @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
 
     let wall: Wall
     let image: UIImage
     let boulder: Boulder
+    @State private var tickCount: Int
+    @State private var isUpdatingTick = false
+    @State private var errorMessage: String?
+
+    init(wall: Wall, image: UIImage, boulder: Boulder) {
+        self.wall = wall
+        self.image = image
+        self.boulder = boulder
+        _tickCount = State(initialValue: boulder.tickCount)
+    }
 
     var body: some View {
         NavigationStack {
@@ -386,13 +410,35 @@ private struct BoulderPreviewSheet: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(boulder.name)
                             .font(.title3.weight(.semibold))
-                        Text("\(boulder.grade) • \(boulder.holdIDs.count) holds")
+                        Text("\(boulder.grade) • \(boulder.holdIDs.count) holds • \(tickCount) ticks")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
+                        HStack(spacing: 10) {
+                            Button {
+                                updateTick(increment: true)
+                            } label: {
+                                Label("Tick", systemImage: "checkmark.circle.fill")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(isUpdatingTick)
+
+                            Button {
+                                updateTick(increment: false)
+                            } label: {
+                                Label("Undo Tick", systemImage: "arrow.uturn.backward.circle")
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(isUpdatingTick || tickCount == 0)
+                        }
                         if !boulder.notes.isEmpty {
                             Text(boulder.notes)
                                 .font(.body)
                                 .foregroundStyle(.secondary)
+                        }
+                        if let errorMessage {
+                            Text(errorMessage)
+                                .font(.footnote)
+                                .foregroundStyle(.red)
                         }
                     }
                 }
@@ -407,6 +453,26 @@ private struct BoulderPreviewSheet: View {
                     }
                 }
             }
+        }
+    }
+
+    private func updateTick(increment: Bool) {
+        isUpdatingTick = true
+        errorMessage = nil
+
+        Task {
+            do {
+                if increment {
+                    try await store.incrementBoulderTick(wallID: boulder.wallID, boulderID: boulder.id)
+                    tickCount += 1
+                } else {
+                    try await store.decrementBoulderTick(wallID: boulder.wallID, boulderID: boulder.id)
+                    tickCount = max(0, tickCount - 1)
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            isUpdatingTick = false
         }
     }
 }
