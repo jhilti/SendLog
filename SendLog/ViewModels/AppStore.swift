@@ -1,4 +1,5 @@
 import Foundation
+import CoreImage
 import UIKit
 
 @MainActor
@@ -40,6 +41,7 @@ final class AppStore: ObservableObject {
     private struct BackupWall: Codable {
         let wall: Wall
         let imageDataBase64: String
+        let maskDataBase64: String?
     }
 
     @Published private(set) var walls: [Wall] = []
@@ -47,13 +49,15 @@ final class AppStore: ObservableObject {
 
     private let repository: WallRepository
     private let imageStore: ImageStore
-    private let detector: HoldDetectionService
+    private let detector: any HoldDetecting
     private let imageCache = NSCache<NSString, UIImage>()
+    private let maskCache = NSCache<NSString, UIImage>()
+    private let ciContext = CIContext(options: nil)
 
     init(
         repository: WallRepository = WallRepository(),
         imageStore: ImageStore = ImageStore(),
-        detector: HoldDetectionService = HoldDetectionService()
+        detector: any HoldDetecting = HoldDetectionService()
     ) {
         self.repository = repository
         self.imageStore = imageStore
@@ -91,6 +95,23 @@ final class AppStore: ObservableObject {
         return image
     }
 
+    func mask(for wall: Wall) -> UIImage? {
+        guard let maskFilename = wall.maskFilename, !maskFilename.isEmpty else {
+            return nil
+        }
+
+        let cacheKey = maskFilename as NSString
+        if let cached = maskCache.object(forKey: cacheKey) {
+            return cached
+        }
+
+        guard let maskImage = imageStore.loadImage(filename: maskFilename) else {
+            return nil
+        }
+        maskCache.setObject(maskImage, forKey: cacheKey)
+        return maskImage
+    }
+
     func createWall(name: String, imageData: Data) async throws {
         guard UIImage(data: imageData) != nil else {
             throw AppStoreError.invalidImage
@@ -108,15 +129,49 @@ final class AppStore: ObservableObject {
         try await persist()
     }
 
+    func setWallMask(wallID: UUID, imageData: Data) async throws {
+        guard let index = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+        guard UIImage(data: imageData) != nil else {
+            throw AppStoreError.invalidImage
+        }
+
+        if let currentMaskFilename = walls[index].maskFilename {
+            imageStore.deleteImage(filename: currentMaskFilename)
+            maskCache.removeObject(forKey: currentMaskFilename as NSString)
+        }
+
+        let filename = try imageStore.saveMaskImageData(imageData, for: wallID)
+        walls[index].maskFilename = filename
+        walls[index].updatedAt = Date()
+        try await persist()
+    }
+
+    func clearWallMask(wallID: UUID) async throws {
+        guard let index = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+        guard let currentMaskFilename = walls[index].maskFilename else {
+            return
+        }
+
+        imageStore.deleteImage(filename: currentMaskFilename)
+        maskCache.removeObject(forKey: currentMaskFilename as NSString)
+        walls[index].maskFilename = nil
+        walls[index].updatedAt = Date()
+        try await persist()
+    }
+
     func detectHolds(for wallID: UUID) async throws {
         guard let index = wallIndex(for: wallID) else {
             throw AppStoreError.wallNotFound
         }
-        guard let image = image(for: walls[index]) else {
+        guard let detectionImage = detectionImage(for: walls[index]) else {
             throw AppStoreError.missingWallImage
         }
 
-        let detected = try await detector.detectHolds(in: image)
+        let detected = try await detector.detectHolds(in: detectionImage)
         walls[index].holds = detected
         walls[index].updatedAt = Date()
         try await persist()
@@ -156,6 +211,28 @@ final class AppStore: ObservableObject {
         guard let index = wallIndex(for: wallID) else {
             throw AppStoreError.wallNotFound
         }
+        guard let detectionImage = detectionImage(for: walls[index]) else {
+            throw AppStoreError.missingWallImage
+        }
+
+        let point = CGPoint(
+            x: min(max(0, normalizedPoint.x), 1),
+            y: min(max(0, normalizedPoint.y), 1)
+        )
+
+        var newHold = try await detector.segmentHold(around: point, in: detectionImage)
+            ?? manualRingMarker(at: point)
+        newHold.source = .manual
+        walls[index].holds.append(newHold)
+        walls[index].updatedAt = Date()
+        try await persist()
+    }
+
+    @discardableResult
+    func addManualMarkerHold(wallID: UUID, at normalizedPoint: CGPoint) async throws -> UUID {
+        guard let index = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
 
         let point = CGPoint(
             x: min(max(0, normalizedPoint.x), 1),
@@ -165,6 +242,24 @@ final class AppStore: ObservableObject {
         let newHold = manualRingMarker(at: point)
         walls[index].holds.append(newHold)
         walls[index].updatedAt = Date()
+        try await persist()
+        return newHold.id
+    }
+
+    func moveHold(wallID: UUID, holdID: UUID, to normalizedPoint: CGPoint) async throws {
+        guard let wallIndex = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+        guard let holdIndex = walls[wallIndex].holds.firstIndex(where: { $0.id == holdID }) else {
+            return
+        }
+
+        let clampedPoint = CGPoint(
+            x: min(max(0, normalizedPoint.x), 1),
+            y: min(max(0, normalizedPoint.y), 1)
+        )
+        walls[wallIndex].holds[holdIndex] = movedHold(walls[wallIndex].holds[holdIndex], to: clampedPoint)
+        walls[wallIndex].updatedAt = Date()
         try await persist()
     }
 
@@ -301,7 +396,19 @@ final class AppStore: ObservableObject {
             guard let imageData = imageStore.loadImageData(filename: wall.imageFilename) else {
                 throw AppStoreError.missingWallImage
             }
-            return BackupWall(wall: wall, imageDataBase64: imageData.base64EncodedString())
+
+            let maskDataBase64: String?
+            if let maskFilename = wall.maskFilename {
+                maskDataBase64 = imageStore.loadImageData(filename: maskFilename)?.base64EncodedString()
+            } else {
+                maskDataBase64 = nil
+            }
+
+            return BackupWall(
+                wall: wall,
+                imageDataBase64: imageData.base64EncodedString(),
+                maskDataBase64: maskDataBase64
+            )
         }
 
         let payload = BackupPayload(
@@ -341,16 +448,84 @@ final class AppStore: ObservableObject {
 
             var wall = backupWall.wall
             wall.imageFilename = try imageStore.saveImageData(imageData, for: wall.id)
+
+            if let maskDataBase64 = backupWall.maskDataBase64,
+               let maskData = Data(base64Encoded: maskDataBase64),
+               UIImage(data: maskData) != nil {
+                wall.maskFilename = try imageStore.saveMaskImageData(maskData, for: wall.id)
+            } else {
+                wall.maskFilename = nil
+            }
+
             importedWalls.append(wall)
         }
 
         imageCache.removeAllObjects()
+        maskCache.removeAllObjects()
         walls = importedWalls.sorted { $0.updatedAt > $1.updatedAt }
         try await persist()
     }
 
     private func wallIndex(for wallID: UUID) -> Int? {
         walls.firstIndex { $0.id == wallID }
+    }
+
+    private func detectionImage(for wall: Wall) -> UIImage? {
+        guard let baseImage = image(for: wall) else {
+            return nil
+        }
+        guard let maskImage = mask(for: wall) else {
+            return baseImage
+        }
+
+        return maskedImage(baseImage, with: maskImage) ?? baseImage
+    }
+
+    private func maskedImage(_ image: UIImage, with mask: UIImage) -> UIImage? {
+        guard let sourceImage = normalizedImage(image),
+              let maskImage = normalizedImage(mask),
+              let sourceCI = CIImage(image: sourceImage),
+              let maskCI = CIImage(image: maskImage) else {
+            return nil
+        }
+
+        let targetRect = CGRect(origin: .zero, size: sourceImage.size)
+        guard targetRect.width > 1, targetRect.height > 1 else {
+            return nil
+        }
+
+        let sx = targetRect.width / max(maskCI.extent.width, 1)
+        let sy = targetRect.height / max(maskCI.extent.height, 1)
+        let scaledMask = maskCI
+            .transformed(by: CGAffineTransform(scaleX: sx, y: sy))
+            .cropped(to: targetRect)
+        let blackBackground = CIImage(color: CIColor.black).cropped(to: targetRect)
+        let output = sourceCI.applyingFilter(
+            "CIBlendWithMask",
+            parameters: [
+                kCIInputMaskImageKey: scaledMask,
+                kCIInputBackgroundImageKey: blackBackground
+            ]
+        )
+
+        guard let cgImage = ciContext.createCGImage(output, from: targetRect) else {
+            return nil
+        }
+        return UIImage(cgImage: cgImage, scale: sourceImage.scale, orientation: .up)
+    }
+
+    private func normalizedImage(_ image: UIImage) -> UIImage? {
+        if image.imageOrientation == .up {
+            return image
+        }
+
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = image.scale
+        let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
+        let rendered = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: image.size))
+        }
+        return rendered
     }
 
     private func manualRingMarker(at normalizedPoint: CGPoint) -> Hold {
@@ -391,6 +566,38 @@ final class AppStore: ObservableObject {
         }
 
         return contour.count >= 3 ? contour : []
+    }
+
+    private func movedHold(_ hold: Hold, to normalizedCenter: CGPoint) -> Hold {
+        let currentCenter = CGPoint(
+            x: hold.rect.x + (hold.rect.width / 2),
+            y: hold.rect.y + (hold.rect.height / 2)
+        )
+        let requestedDx = normalizedCenter.x - currentCenter.x
+        let requestedDy = normalizedCenter.y - currentCenter.y
+
+        var moved = hold
+        moved.rect = NormalizedRect(
+            x: hold.rect.x + requestedDx,
+            y: hold.rect.y + requestedDy,
+            width: hold.rect.width,
+            height: hold.rect.height
+        ).clamped()
+
+        let updatedCenter = CGPoint(
+            x: moved.rect.x + (moved.rect.width / 2),
+            y: moved.rect.y + (moved.rect.height / 2)
+        )
+        let appliedDx = updatedCenter.x - currentCenter.x
+        let appliedDy = updatedCenter.y - currentCenter.y
+
+        if let contour = hold.contour {
+            moved.contour = contour.map { point in
+                NormalizedPoint(x: point.x + appliedDx, y: point.y + appliedDy).clamped()
+            }
+        }
+
+        return moved
     }
 
     private func decimatedContour(_ points: [CGPoint], maxCount: Int) -> [CGPoint] {

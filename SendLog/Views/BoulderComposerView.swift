@@ -7,7 +7,8 @@ struct BoulderComposerView: View {
     let wallID: UUID
     let editingBoulder: Boulder?
 
-    @State private var selectedHoldIDs: Set<UUID>
+    @State private var primarySelectedHoldIDs: Set<UUID>
+    @State private var secondarySelectedHoldIDs: Set<UUID>
     @State private var name: String
     @State private var selectedGrade: ClimbingGrade
     @State private var notes: String
@@ -19,12 +20,14 @@ struct BoulderComposerView: View {
         self.editingBoulder = editingBoulder
 
         if let editingBoulder {
-            _selectedHoldIDs = State(initialValue: Set(editingBoulder.holdIDs))
+            _primarySelectedHoldIDs = State(initialValue: Set(editingBoulder.holdIDs))
+            _secondarySelectedHoldIDs = State(initialValue: [])
             _name = State(initialValue: editingBoulder.name)
             _selectedGrade = State(initialValue: Self.grade(from: editingBoulder.grade))
             _notes = State(initialValue: editingBoulder.notes)
         } else {
-            _selectedHoldIDs = State(initialValue: [])
+            _primarySelectedHoldIDs = State(initialValue: [])
+            _secondarySelectedHoldIDs = State(initialValue: [])
             _name = State(initialValue: "")
             _selectedGrade = State(initialValue: .sixA)
             _notes = State(initialValue: "")
@@ -40,9 +43,10 @@ struct BoulderComposerView: View {
                             WallCanvasView(
                                 image: image,
                                 holds: wall.holds,
-                                selectedHoldIDs: selectedHoldIDs,
+                                selectedHoldIDs: primarySelectedHoldIDs,
+                                secondarySelectedHoldIDs: secondarySelectedHoldIDs,
                                 onHoldTap: { hold in
-                                    toggleSelection(for: hold.id)
+                                    cycleSelection(for: hold.id)
                                 },
                                 onEmptyImageTap: nil
                             )
@@ -105,6 +109,10 @@ struct BoulderComposerView: View {
         ClimbingGrade.allCases.first(where: { $0.rawValue == rawValue }) ?? .sixA
     }
 
+    private var selectedHoldIDs: Set<UUID> {
+        primarySelectedHoldIDs.union(secondarySelectedHoldIDs)
+    }
+
     private var canSave: Bool {
         !isSaving
             && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -118,12 +126,17 @@ struct BoulderComposerView: View {
         return editingBoulder == nil ? "Save" : "Update"
     }
 
-    private func toggleSelection(for holdID: UUID) {
-        if selectedHoldIDs.contains(holdID) {
-            selectedHoldIDs.remove(holdID)
-        } else {
-            selectedHoldIDs.insert(holdID)
+    private func cycleSelection(for holdID: UUID) {
+        if secondarySelectedHoldIDs.contains(holdID) {
+            secondarySelectedHoldIDs.remove(holdID)
+            return
         }
+        if primarySelectedHoldIDs.contains(holdID) {
+            primarySelectedHoldIDs.remove(holdID)
+            secondarySelectedHoldIDs.insert(holdID)
+            return
+        }
+        primarySelectedHoldIDs.insert(holdID)
     }
 
     private func save() {

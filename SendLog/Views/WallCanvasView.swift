@@ -5,8 +5,13 @@ struct WallCanvasView: View {
     let image: UIImage
     let holds: [Hold]
     let selectedHoldIDs: Set<UUID>
+    var secondarySelectedHoldIDs: Set<UUID> = []
+    var editableHoldID: UUID? = nil
     var onHoldTap: ((Hold) -> Void)?
+    var onHoldDoubleTap: ((Hold) -> Void)? = nil
     var onEmptyImageTap: ((CGPoint) -> Void)?
+    var onEmptyImageDoubleTap: ((CGPoint) -> Void)? = nil
+    var onHoldDragEnd: ((Hold, CGPoint) -> Void)? = nil
     var onContourComplete: (([CGPoint]) -> Void)?
     var onContourUndo: (() -> Void)? = nil
     var contourUndoRequestID: Int = 0
@@ -24,6 +29,9 @@ struct WallCanvasView: View {
     @State private var isMagnifying = false
     @State private var lastTransformEndedAt: Date = .distantPast
     @State private var isContourPanMode = false
+    @State private var activeHoldDragID: UUID? = nil
+    @State private var draggedHoldCenter: CGPoint? = nil
+    @State private var activeHoldDragTouchOffset: CGSize = .zero
 
     var body: some View {
         GeometryReader { geometry in
@@ -43,30 +51,50 @@ struct WallCanvasView: View {
 
                     Canvas { context, _ in
                         for hold in holds {
-                            let isSelected = selectedHoldIDs.contains(hold.id)
-                            let isManualMarker = hold.source == .manual
-                                && hold.confidence <= 0.3
-                                && (hold.contour?.count ?? 0) >= 10
-                            let path = holdPath(for: hold, in: imageFrame)
-                            let lineWidth: CGFloat = isSelected ? 2.0 : (isManualMarker ? 1.3 : 1.0)
+                            let rendered = renderedHold(for: hold)
+                            let isPrimarySelected = selectedHoldIDs.contains(hold.id)
+                            let isSecondarySelected = secondarySelectedHoldIDs.contains(hold.id)
+                            let isSelected = isPrimarySelected || isSecondarySelected
+                            let selectionColor: Color = isSecondarySelected ? .red : .blue
+                            let isManualMarker = isManualMarker(rendered)
+                            let path = holdPath(for: rendered, in: imageFrame)
+                            let lineWidth: CGFloat = isSelected ? 2.0 : (isManualMarker ? 1.6 : 1.35)
 
-                            if isSelected {
-                                if !isManualMarker {
-                                    context.fill(path, with: .color(.blue.opacity(0.18)))
-                                }
+                            if isManualMarker {
+                                drawGlowingMarker(
+                                    in: &context,
+                                    for: rendered,
+                                    in: imageFrame,
+                                    color: isSelected ? selectionColor : .orange,
+                                    glowBoost: isSelected ? 1.9 : 1.0
+                                )
+                            } else if isSelected {
+                                context.fill(path, with: .color(selectionColor.opacity(0.18)))
 
-                                // Add a bright blue glow for selected holds.
                                 context.drawLayer { layerContext in
-                                    layerContext.addFilter(.shadow(color: .blue.opacity(0.95), radius: 8, x: 0, y: 0))
-                                    layerContext.stroke(path, with: .color(.blue.opacity(0.98)), lineWidth: lineWidth)
+                                    layerContext.addFilter(.shadow(color: selectionColor.opacity(0.95), radius: 8, x: 0, y: 0))
+                                    layerContext.stroke(path, with: .color(selectionColor.opacity(0.98)), lineWidth: lineWidth)
                                 }
 
-                                context.stroke(path, with: .color(.cyan.opacity(0.85)), lineWidth: max(0.7, lineWidth * 0.5))
+                                let accentColor: Color = isSecondarySelected ? .orange : .cyan
+                                context.stroke(path, with: .color(accentColor.opacity(0.85)), lineWidth: max(0.7, lineWidth * 0.5))
                             } else {
-                                let strokeColor: Color = isManualMarker
-                                    ? .orange.opacity(0.2)
-                                    : .orange.opacity(0.28)
+                                let strokeColor: Color = rendered.source == .detected
+                                    ? .orange.opacity(0.62)
+                                    : .orange.opacity(0.58)
                                 context.stroke(path, with: .color(strokeColor), lineWidth: lineWidth)
+                            }
+
+                            if editableHoldID == hold.id {
+                                let highlightRect = holdHighlightRect(for: rendered, in: imageFrame)
+                                context.drawLayer { layerContext in
+                                    layerContext.addFilter(.shadow(color: .white.opacity(0.8), radius: 4, x: 0, y: 0))
+                                    layerContext.stroke(
+                                        Path(roundedRect: highlightRect, cornerRadius: 4),
+                                        with: .color(.white.opacity(0.96)),
+                                        lineWidth: 1.4
+                                    )
+                                }
                             }
                         }
 
@@ -117,7 +145,7 @@ struct WallCanvasView: View {
                             .simultaneousGesture(contourModeToggleGesture)
                     }
                 } else if isZoomEnabled {
-                    if zoomScale > 1.01 {
+                    if zoomScale > 1.01 || hasEditableHoldDrag {
                         baseCanvas
                             .highPriorityGesture(tapGesture(in: imageFrame))
                             .simultaneousGesture(dragGesture(in: imageFrame))
@@ -128,8 +156,17 @@ struct WallCanvasView: View {
                             .simultaneousGesture(magnificationGesture(in: imageFrame))
                     }
                 } else if hasTapHandlers {
+                    if hasEditableHoldDrag {
+                        baseCanvas
+                            .highPriorityGesture(tapGesture(in: imageFrame))
+                            .simultaneousGesture(dragGesture(in: imageFrame))
+                    } else {
+                        baseCanvas
+                            .highPriorityGesture(tapGesture(in: imageFrame))
+                    }
+                } else if hasEditableHoldDrag {
                     baseCanvas
-                        .highPriorityGesture(tapGesture(in: imageFrame))
+                        .simultaneousGesture(dragGesture(in: imageFrame))
                 } else {
                     baseCanvas
                 }
@@ -141,18 +178,38 @@ struct WallCanvasView: View {
                 if !enabled {
                     isContourPanMode = false
                 }
+                if !enabled {
+                    activeHoldDragID = nil
+                    draggedHoldCenter = nil
+                    activeHoldDragTouchOffset = .zero
+                }
             }
             .onChange(of: isContourDrawEnabled) { _, enabled in
                 if !enabled {
                     draftContourPoints = []
                     isContourPanMode = false
                 }
+                activeHoldDragID = nil
+                draggedHoldCenter = nil
+                activeHoldDragTouchOffset = .zero
             }
             .onChange(of: contourUndoRequestID) { _, _ in
                 guard isContourDrawEnabled else {
                     return
                 }
                 undoLastContourStep()
+            }
+            .onChange(of: editableHoldID) { _, _ in
+                activeHoldDragID = nil
+                draggedHoldCenter = nil
+                activeHoldDragTouchOffset = .zero
+            }
+            .onChange(of: holds) { _, updatedHolds in
+                if let activeHoldDragID, !updatedHolds.contains(where: { $0.id == activeHoldDragID }) {
+                    self.activeHoldDragID = nil
+                    draggedHoldCenter = nil
+                    activeHoldDragTouchOffset = .zero
+                }
             }
         }
         .frame(maxWidth: .infinity)
@@ -186,7 +243,11 @@ struct WallCanvasView: View {
     }
 
     private var hasTapHandlers: Bool {
-        onHoldTap != nil || onEmptyImageTap != nil
+        onHoldTap != nil || onEmptyImageTap != nil || onHoldDoubleTap != nil || onEmptyImageDoubleTap != nil
+    }
+
+    private var hasEditableHoldDrag: Bool {
+        editableHoldID != nil && onHoldDragEnd != nil
     }
 
     private var layoutImageSize: CGSize {
@@ -199,31 +260,49 @@ struct WallCanvasView: View {
     }
 
     private func tapGesture(in imageFrame: CGRect) -> some Gesture {
-        SpatialTapGesture()
+        SpatialTapGesture(count: 2)
+            .exclusively(before: SpatialTapGesture())
             .onEnded { value in
-                let location = locationInUnscaledCanvas(from: value.location, imageFrame: imageFrame)
-                guard imageFrame.contains(location) else {
-                    return
+                switch value {
+                case .first(let result):
+                    handleTap(at: result.location, in: imageFrame, isDoubleTap: true)
+                case .second(let result):
+                    handleTap(at: result.location, in: imageFrame, isDoubleTap: false)
                 }
-
-                if let onHoldTap {
-                    if let hold = holds.reversed().first(where: { holdContains($0, point: location, imageFrame: imageFrame) }) {
-                        onHoldTap(hold)
-                        return
-                    }
-
-                    if nearestSelectionEnabled, let nearest = nearestHold(to: location, in: imageFrame) {
-                        onHoldTap(nearest)
-                        return
-                    }
-                }
-
-                let normalizedPoint = CGPoint(
-                    x: (location.x - imageFrame.minX) / imageFrame.width,
-                    y: (location.y - imageFrame.minY) / imageFrame.height
-                )
-                onEmptyImageTap?(normalizedPoint)
             }
+    }
+
+    private func handleTap(at location: CGPoint, in imageFrame: CGRect, isDoubleTap: Bool) {
+        let unscaledLocation = locationInUnscaledCanvas(from: location, imageFrame: imageFrame)
+        guard imageFrame.contains(unscaledLocation) else {
+            return
+        }
+
+        if let hold = holds.reversed().first(where: { holdContains($0, point: unscaledLocation, imageFrame: imageFrame) }) {
+            if isDoubleTap, let onHoldDoubleTap {
+                onHoldDoubleTap(hold)
+                return
+            }
+            if let onHoldTap {
+                onHoldTap(hold)
+                return
+            }
+            if !isDoubleTap, nearestSelectionEnabled, let nearest = nearestHold(to: unscaledLocation, in: imageFrame) {
+                onHoldTap?(nearest)
+                return
+            }
+        } else if !isDoubleTap, let onHoldTap, nearestSelectionEnabled,
+                  let nearest = nearestHold(to: unscaledLocation, in: imageFrame) {
+            onHoldTap(nearest)
+            return
+        }
+
+        let normalizedPoint = normalizedPoint(from: unscaledLocation, in: imageFrame)
+        if isDoubleTap, let onEmptyImageDoubleTap {
+            onEmptyImageDoubleTap(normalizedPoint)
+            return
+        }
+        onEmptyImageTap?(normalizedPoint)
     }
 
     private func contourDrawGesture(in imageFrame: CGRect) -> some Gesture {
@@ -273,8 +352,11 @@ struct WallCanvasView: View {
     }
 
     private func dragGesture(in imageFrame: CGRect) -> some Gesture {
-        DragGesture(minimumDistance: 8, coordinateSpace: .local)
+        DragGesture(minimumDistance: hasEditableHoldDrag ? 0 : 8, coordinateSpace: .local)
             .onChanged { value in
+                if handleEditableHoldDragChanged(value, in: imageFrame) {
+                    return
+                }
                 guard isZoomEnabled, zoomScale > 1.01 else {
                     return
                 }
@@ -292,6 +374,9 @@ struct WallCanvasView: View {
                 zoomOffset = clampedOffset(proposed, for: zoomScale, imageFrame: imageFrame)
             }
             .onEnded { value in
+                if handleEditableHoldDragEnded(value, in: imageFrame) {
+                    return
+                }
                 guard isZoomEnabled else {
                     return
                 }
@@ -346,6 +431,69 @@ struct WallCanvasView: View {
             }
     }
 
+    private func handleEditableHoldDragChanged(_ value: DragGesture.Value, in imageFrame: CGRect) -> Bool {
+        guard hasEditableHoldDrag, let editableHoldID else {
+            return false
+        }
+        let startLocation = locationInUnscaledCanvas(from: value.startLocation, imageFrame: imageFrame)
+        guard let hold = holds.first(where: { $0.id == editableHoldID }),
+              holdContains(hold, point: startLocation, imageFrame: imageFrame) else {
+            return false
+        }
+
+        if activeHoldDragID == nil {
+            let dragDistance = hypot(value.translation.width, value.translation.height)
+            guard dragDistance >= 2 else {
+                return false
+            }
+            activeHoldDragID = editableHoldID
+            let holdCenter = holdCenterPoint(for: hold, in: imageFrame)
+            activeHoldDragTouchOffset = CGSize(
+                width: holdCenter.x - startLocation.x,
+                height: holdCenter.y - startLocation.y
+            )
+        }
+
+        let fingerLocation = locationInUnscaledCanvas(from: value.location, imageFrame: imageFrame)
+        let adjustedCenter = CGPoint(
+            x: fingerLocation.x + activeHoldDragTouchOffset.width,
+            y: fingerLocation.y + activeHoldDragTouchOffset.height
+        )
+        let clampedCenter = clampedToImageFrame(adjustedCenter, imageFrame: imageFrame)
+        draggedHoldCenter = normalizedPoint(from: clampedCenter, in: imageFrame)
+        return true
+    }
+
+    private func handleEditableHoldDragEnded(_ value: DragGesture.Value, in imageFrame: CGRect) -> Bool {
+        guard let activeHoldDragID else {
+            return false
+        }
+        defer {
+            self.activeHoldDragID = nil
+            draggedHoldCenter = nil
+            activeHoldDragTouchOffset = .zero
+        }
+
+        guard let hold = holds.first(where: { $0.id == activeHoldDragID }) else {
+            return true
+        }
+
+        let finalCenter: CGPoint
+        if let draggedHoldCenter {
+            finalCenter = draggedHoldCenter
+        } else {
+            let fingerLocation = locationInUnscaledCanvas(from: value.location, imageFrame: imageFrame)
+            let adjustedCenter = CGPoint(
+                x: fingerLocation.x + activeHoldDragTouchOffset.width,
+                y: fingerLocation.y + activeHoldDragTouchOffset.height
+            )
+            let clampedCenter = clampedToImageFrame(adjustedCenter, imageFrame: imageFrame)
+            finalCenter = normalizedPoint(from: clampedCenter, in: imageFrame)
+        }
+        onHoldDragEnd?(hold, finalCenter)
+        return true
+    }
+
     private func appendContourPoint(_ normalizedPoint: CGPoint) {
         let point = CGPoint(
             x: min(max(0, normalizedPoint.x), 1),
@@ -389,6 +537,148 @@ struct WallCanvasView: View {
         )
     }
 
+    private func normalizedPoint(from point: CGPoint, in imageFrame: CGRect) -> CGPoint {
+        CGPoint(
+            x: (point.x - imageFrame.minX) / imageFrame.width,
+            y: (point.y - imageFrame.minY) / imageFrame.height
+        )
+    }
+
+    private func clampedToImageFrame(_ point: CGPoint, imageFrame: CGRect) -> CGPoint {
+        CGPoint(
+            x: min(max(point.x, imageFrame.minX), imageFrame.maxX),
+            y: min(max(point.y, imageFrame.minY), imageFrame.maxY)
+        )
+    }
+
+    private func renderedHold(for hold: Hold) -> Hold {
+        guard hold.id == activeHoldDragID, let draggedHoldCenter else {
+            return hold
+        }
+        return holdMoved(hold, to: draggedHoldCenter)
+    }
+
+    private func holdMoved(_ hold: Hold, to normalizedCenter: CGPoint) -> Hold {
+        let clampedCenter = CGPoint(
+            x: min(max(0, normalizedCenter.x), 1),
+            y: min(max(0, normalizedCenter.y), 1)
+        )
+        let currentCenter = CGPoint(
+            x: hold.rect.x + (hold.rect.width / 2),
+            y: hold.rect.y + (hold.rect.height / 2)
+        )
+        let requestedDx = clampedCenter.x - currentCenter.x
+        let requestedDy = clampedCenter.y - currentCenter.y
+
+        var moved = hold
+        moved.rect = NormalizedRect(
+            x: hold.rect.x + requestedDx,
+            y: hold.rect.y + requestedDy,
+            width: hold.rect.width,
+            height: hold.rect.height
+        ).clamped()
+
+        let updatedCenter = CGPoint(
+            x: moved.rect.x + (moved.rect.width / 2),
+            y: moved.rect.y + (moved.rect.height / 2)
+        )
+        let appliedDx = updatedCenter.x - currentCenter.x
+        let appliedDy = updatedCenter.y - currentCenter.y
+
+        if let contour = hold.contour {
+            moved.contour = contour.map { point in
+                NormalizedPoint(x: point.x + appliedDx, y: point.y + appliedDy).clamped()
+            }
+        }
+
+        return moved
+    }
+
+    private func holdHighlightRect(for hold: Hold, in imageFrame: CGRect) -> CGRect {
+        let baseRect: CGRect
+        if isManualMarker(hold) {
+            let holdRect = hold.rect.toCGRect(in: imageFrame)
+            let center = CGPoint(x: holdRect.midX, y: holdRect.midY)
+            let radius = max(5, min(holdRect.width, holdRect.height) * 0.16)
+            baseRect = CGRect(
+                x: center.x - radius,
+                y: center.y - radius,
+                width: radius * 2,
+                height: radius * 2
+            )
+        } else {
+            baseRect = hold.rect.toCGRect(in: imageFrame)
+        }
+        let padding = max(6, min(baseRect.width, baseRect.height) * 0.2)
+        return baseRect.insetBy(dx: -padding, dy: -padding)
+    }
+
+    private func drawGlowingMarker(
+        in context: inout GraphicsContext,
+        for hold: Hold,
+        in imageFrame: CGRect,
+        color: Color,
+        glowBoost: Double = 1.0
+    ) {
+        let rect = hold.rect.toCGRect(in: imageFrame)
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let coreRadius = max(1.5, min(rect.width, rect.height) * 0.11)
+        let glowLayers: [(scale: CGFloat, opacity: Double)] = [
+            (2.8, 0.08),
+            (2.2, 0.14),
+            (1.6, 0.23),
+            (1.2, 0.34)
+        ]
+
+        let clampedBoost = max(1.0, glowBoost)
+        let shadowOpacity = min(1.0, 0.44 * clampedBoost)
+        let shadowRadius = 5.0 * clampedBoost
+        context.drawLayer { layerContext in
+            if clampedBoost > 1.01 {
+                layerContext.addFilter(
+                    .shadow(
+                        color: color.opacity(shadowOpacity),
+                        radius: shadowRadius,
+                        x: 0,
+                        y: 0
+                    )
+                )
+            }
+
+            for layer in glowLayers {
+                let radius = coreRadius * layer.scale
+                let glowRect = CGRect(
+                    x: center.x - radius,
+                    y: center.y - radius,
+                    width: radius * 2,
+                    height: radius * 2
+                )
+                let opacity = min(0.95, layer.opacity * clampedBoost)
+                layerContext.fill(Path(ellipseIn: glowRect), with: .color(color.opacity(opacity)))
+            }
+
+            let coreRect = CGRect(
+                x: center.x - coreRadius,
+                y: center.y - coreRadius,
+                width: coreRadius * 2,
+                height: coreRadius * 2
+            )
+            let coreOpacity = min(1.0, 0.95 * clampedBoost)
+            layerContext.fill(Path(ellipseIn: coreRect), with: .color(color.opacity(coreOpacity)))
+        }
+    }
+
+    private func isManualMarker(_ hold: Hold) -> Bool {
+        hold.source == .manual
+            && hold.confidence <= 0.3
+            && (hold.contour?.count ?? 0) >= 10
+    }
+
+    private func holdCenterPoint(for hold: Hold, in imageFrame: CGRect) -> CGPoint {
+        let rect = hold.rect.toCGRect(in: imageFrame)
+        return CGPoint(x: rect.midX, y: rect.midY)
+    }
+
     private func nearestHold(to location: CGPoint, in imageFrame: CGRect) -> Hold? {
         let maxDistance = max(20, min(imageFrame.width, imageFrame.height) * 0.03)
         let nearest = holds
@@ -426,9 +716,17 @@ struct WallCanvasView: View {
     }
 
     private func holdContains(_ hold: Hold, point: CGPoint, imageFrame: CGRect) -> Bool {
+        if isManualMarker(hold) {
+            let hitRect = holdHighlightRect(for: hold, in: imageFrame)
+            return hitRect.contains(point)
+        }
         if let contourPath = contourPath(for: hold, in: imageFrame),
            contourPath.contains(point, eoFill: true) {
             return true
+        }
+        if hold.source == .detected, hold.contour == nil {
+            let markerRect = detectedMarkerRect(for: hold, in: imageFrame)
+            return markerRect.contains(point)
         }
         return hold.rect.toCGRect(in: imageFrame).contains(point)
     }
@@ -437,8 +735,24 @@ struct WallCanvasView: View {
         if let contourPath = contourPath(for: hold, in: imageFrame) {
             return contourPath
         }
+        if hold.source == .detected {
+            let markerRect = detectedMarkerRect(for: hold, in: imageFrame)
+            return Path(ellipseIn: markerRect)
+        }
         let rect = hold.rect.toCGRect(in: imageFrame)
         return Path(roundedRect: rect, cornerRadius: 4)
+    }
+
+    private func detectedMarkerRect(for hold: Hold, in imageFrame: CGRect) -> CGRect {
+        let rect = hold.rect.toCGRect(in: imageFrame)
+        let base = min(rect.width, rect.height)
+        let diameter = max(8, base * 0.68)
+        return CGRect(
+            x: rect.midX - (diameter / 2),
+            y: rect.midY - (diameter / 2),
+            width: diameter,
+            height: diameter
+        )
     }
 
     private func contourPath(for hold: Hold, in imageFrame: CGRect) -> Path? {

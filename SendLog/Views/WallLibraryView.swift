@@ -15,16 +15,22 @@ struct WallLibraryView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 12) {
-                Picker("Library", selection: $selectedTab) {
-                    ForEach(LibraryTab.allCases) { tab in
-                        Text(tab.rawValue).tag(tab)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
+            ZStack {
+                Color(.systemBackground)
+                    .ignoresSafeArea()
 
-                content
+                VStack(spacing: 12) {
+                    Picker("Library", selection: $selectedTab) {
+                        ForEach(LibraryTab.allCases) { tab in
+                            Text(tab.rawValue).tag(tab)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal)
+
+                    content
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
             .navigationTitle("SendLog")
             .navigationBarTitleDisplayMode(.inline)

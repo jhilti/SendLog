@@ -17,12 +17,13 @@ targets:
       path: SendLog/Resources/Info.plist
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.SendLog
+        PRODUCT_BUNDLE_IDENTIFIER: com.jhilki.SendLog
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         INFOPLIST_KEY_NSPhotoLibraryUsageDescription: Import wall photos to build and save boulder problems offline.
         INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: Save exported wall images and backups from SendLog.
+        INFOPLIST_KEY_UILaunchStoryboardName: LaunchScreen
         INFOPLIST_KEY_UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
@@ -32,4 +33,4 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        DEVELOPMENT_TEAM: ""
+        DEVELOPMENT_TEAM: Y53LL7K6KC

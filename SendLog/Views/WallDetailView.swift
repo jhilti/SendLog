@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 import UIKit
 
@@ -12,9 +13,12 @@ struct WallDetailView: View {
     @State private var isAddModeEnabled = false
     @State private var isContourDrawModeEnabled = false
     @State private var contourUndoRequestID = 0
+    @State private var selectedEditableHoldID: UUID?
     @State private var isShowingDeleteAllHoldsConfirmation = false
     @State private var previewBoulder: Boulder?
     @State private var editingBoulder: Boulder?
+    @State private var selectedMaskItem: PhotosPickerItem?
+    @State private var isSavingWallMask = false
     @State private var errorMessage: String?
 
     var body: some View {
@@ -29,11 +33,23 @@ struct WallDetailView: View {
                                 image: image,
                                 holds: wall.holds,
                                 selectedHoldIDs: [],
-                                onHoldTap: (isEditingHolds && !isAddModeEnabled) ? { hold in
+                                editableHoldID: selectedEditableHoldID,
+                                onHoldTap: (isEditingHolds && isAddModeEnabled && !isContourDrawModeEnabled) ? { hold in
+                                    handleEditableHoldTap(hold)
+                                } : (isEditingHolds && !isAddModeEnabled) ? { hold in
                                     handleHoldTap(hold)
                                 } : nil,
-                                onEmptyImageTap: (isEditingHolds && isAddModeEnabled && !isContourDrawModeEnabled) ? { point in
-                                    handleImageTap(point)
+                                onHoldDoubleTap: (isEditingHolds && isAddModeEnabled && !isContourDrawModeEnabled) ? { hold in
+                                    handleEditableHoldDoubleTap(hold)
+                                } : nil,
+                                onEmptyImageTap: (isEditingHolds && isAddModeEnabled && !isContourDrawModeEnabled) ? { _ in
+                                    handleEditableEmptyTap()
+                                } : nil,
+                                onEmptyImageDoubleTap: (isEditingHolds && isAddModeEnabled && !isContourDrawModeEnabled) ? { point in
+                                    handleEditableImageDoubleTap(point)
+                                } : nil,
+                                onHoldDragEnd: (isEditingHolds && isAddModeEnabled && !isContourDrawModeEnabled) ? { hold, point in
+                                    handleEditableHoldMove(hold: hold, to: point)
                                 } : nil,
                                 onContourComplete: (isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled) ? { points in
                                     handleContourDraw(points)
@@ -155,6 +171,12 @@ struct WallDetailView: View {
                     } message: {
                         Text(errorMessage ?? "Unknown error")
                     }
+                    .onChange(of: selectedMaskItem) { _, item in
+                        guard let item else { return }
+                        Task {
+                            await loadWallMask(from: item)
+                        }
+                    }
                 } else {
                     ContentUnavailableView(
                         "Wall Not Found",
@@ -184,11 +206,41 @@ struct WallDetailView: View {
                         if !isEditingHolds {
                             isAddModeEnabled = false
                             isContourDrawModeEnabled = false
+                            selectedEditableHoldID = nil
                         }
                     }
                 }
                 .buttonStyle(.bordered)
             }
+
+            HStack(spacing: 10) {
+                PhotosPicker(selection: $selectedMaskItem, matching: .images, photoLibrary: .shared()) {
+                    Label(
+                        wall.maskFilename == nil ? "Set Wall Mask" : "Replace Wall Mask",
+                        systemImage: "photo.badge.checkmark"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .disabled(isSavingWallMask)
+
+                if wall.maskFilename != nil {
+                    Button(role: .destructive) {
+                        clearWallMask()
+                    } label: {
+                        Label("Remove Mask", systemImage: "trash")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isSavingWallMask)
+                }
+            }
+
+            Text(
+                wall.maskFilename == nil
+                    ? "Optional: import a black/white wall mask to restrict hold detection to the wall area."
+                    : "Wall mask enabled. Auto-detect and tap-to-segment now run only inside the masked area."
+            )
+            .font(.footnote)
+            .foregroundStyle(.secondary)
 
             if isEditingHolds {
                 Toggle(
@@ -199,17 +251,29 @@ struct WallDetailView: View {
                             isAddModeEnabled = enabled
                             if !enabled {
                                 isContourDrawModeEnabled = false
+                                selectedEditableHoldID = nil
                             }
                         }
                     )
                 )
 
                 if isAddModeEnabled {
-                    Toggle("Draw Contour", isOn: $isContourDrawModeEnabled)
+                    Toggle(
+                        "Draw Contour",
+                        isOn: Binding(
+                            get: { isContourDrawModeEnabled },
+                            set: { enabled in
+                                isContourDrawModeEnabled = enabled
+                                if enabled {
+                                    selectedEditableHoldID = nil
+                                }
+                            }
+                        )
+                    )
                     Text(
                         isContourDrawModeEnabled
                             ? "Draw around a hold with one finger. Double-tap to toggle Move mode, then drag to pan. Pinch to zoom. Release to save."
-                            : "Tap to place a ring marker. Enable Draw Contour to trace hold shapes."
+                            : "Double-tap to add/remove glowing markers. Tap a marker to select, tap empty space to deselect, then drag to move."
                     )
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -255,20 +319,69 @@ struct WallDetailView: View {
         Task {
             do {
                 try await store.removeHold(wallID: wallID, holdID: hold.id)
+                if selectedEditableHoldID == hold.id {
+                    selectedEditableHoldID = nil
+                }
             } catch {
                 errorMessage = error.localizedDescription
             }
         }
     }
 
-    private func handleImageTap(_ point: CGPoint) {
-        guard isEditingHolds, isAddModeEnabled else {
+    private func handleEditableHoldTap(_ hold: Hold) {
+        guard isEditingHolds, isAddModeEnabled, !isContourDrawModeEnabled else {
+            return
+        }
+        selectedEditableHoldID = hold.id
+    }
+
+    private func handleEditableEmptyTap() {
+        guard isEditingHolds, isAddModeEnabled, !isContourDrawModeEnabled else {
+            return
+        }
+        selectedEditableHoldID = nil
+    }
+
+    private func handleEditableHoldDoubleTap(_ hold: Hold) {
+        guard isEditingHolds, isAddModeEnabled, !isContourDrawModeEnabled else {
             return
         }
 
         Task {
             do {
-                try await store.addManualHold(wallID: wallID, at: point)
+                try await store.removeHold(wallID: wallID, holdID: hold.id)
+                if selectedEditableHoldID == hold.id {
+                    selectedEditableHoldID = nil
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func handleEditableImageDoubleTap(_ point: CGPoint) {
+        guard isEditingHolds, isAddModeEnabled, !isContourDrawModeEnabled else {
+            return
+        }
+
+        Task {
+            do {
+                let newHoldID = try await store.addManualMarkerHold(wallID: wallID, at: point)
+                selectedEditableHoldID = newHoldID
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func handleEditableHoldMove(hold: Hold, to point: CGPoint) {
+        guard isEditingHolds, isAddModeEnabled, !isContourDrawModeEnabled else {
+            return
+        }
+
+        Task {
+            do {
+                try await store.moveHold(wallID: wallID, holdID: hold.id, to: point)
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -309,6 +422,7 @@ struct WallDetailView: View {
                 try await store.removeAllHolds(wallID: wallID)
                 isContourDrawModeEnabled = false
                 isAddModeEnabled = false
+                selectedEditableHoldID = nil
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -322,6 +436,38 @@ struct WallDetailView: View {
             } catch {
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+
+    private func clearWallMask() {
+        isSavingWallMask = true
+        Task {
+            do {
+                try await store.clearWallMask(wallID: wallID)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            isSavingWallMask = false
+        }
+    }
+
+    private func loadWallMask(from item: PhotosPickerItem) async {
+        isSavingWallMask = true
+        defer {
+            isSavingWallMask = false
+            selectedMaskItem = nil
+        }
+
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self),
+                  UIImage(data: data) != nil else {
+                errorMessage = "Could not load the selected mask image."
+                return
+            }
+
+            try await store.setWallMask(wallID: wallID, imageData: data)
+        } catch {
+            errorMessage = "Mask import failed: \(error.localizedDescription)"
         }
     }
 }

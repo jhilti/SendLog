@@ -14,6 +14,22 @@ struct ImageStore {
         return filename
     }
 
+    func saveMaskImageData(_ data: Data, for wallID: UUID) throws -> String {
+        guard let image = UIImage(data: data), let pngData = image.pngData() else {
+            throw NSError(
+                domain: "ImageStore",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Mask image data is invalid."]
+            )
+        }
+
+        let directoryURL = try imageDirectoryURL()
+        let filename = "wall-mask-\(wallID.uuidString).png"
+        let fileURL = directoryURL.appendingPathComponent(filename)
+        try pngData.write(to: fileURL, options: [.atomic])
+        return filename
+    }
+
     func loadImage(filename: String) -> UIImage? {
         let fileURL = imageDirectoryURLWithoutCreation().appendingPathComponent(filename)
         guard let data = try? Data(contentsOf: fileURL) else {
@@ -25,6 +41,11 @@ struct ImageStore {
     func loadImageData(filename: String) -> Data? {
         let fileURL = imageDirectoryURLWithoutCreation().appendingPathComponent(filename)
         return try? Data(contentsOf: fileURL)
+    }
+
+    func deleteImage(filename: String) {
+        let fileURL = imageDirectoryURLWithoutCreation().appendingPathComponent(filename)
+        try? fileManager.removeItem(at: fileURL)
     }
 
     private func imageDirectoryURL() throws -> URL {
