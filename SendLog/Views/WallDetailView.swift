@@ -140,7 +140,11 @@ struct WallDetailView: View {
                     .fullScreenCover(item: $previewBoulder) { boulder in
                         if let wall = store.wall(withID: wallID),
                            let image = store.image(for: wall) {
-                            BoulderPreviewSheet(wall: wall, image: image, boulder: boulder)
+                            BoulderPreviewSheet(
+                                wallID: wallID,
+                                image: image,
+                                initialBoulderID: boulder.id
+                            )
                         } else {
                             ContentUnavailableView(
                                 "Wall Not Available",
@@ -527,68 +531,80 @@ private struct BoulderPreviewSheet: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
 
-    let wall: Wall
+    let wallID: UUID
     let image: UIImage
-    let boulder: Boulder
-    @State private var tickCount: Int
+    @State private var currentBoulderID: UUID
     @State private var isUpdatingTick = false
     @State private var errorMessage: String?
 
-    init(wall: Wall, image: UIImage, boulder: Boulder) {
-        self.wall = wall
+    init(wallID: UUID, image: UIImage, initialBoulderID: UUID) {
+        self.wallID = wallID
         self.image = image
-        self.boulder = boulder
-        _tickCount = State(initialValue: boulder.tickCount)
+        _currentBoulderID = State(initialValue: initialBoulderID)
     }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    WallCanvasView(
-                        image: image,
-                        holds: wall.holds,
-                        selectedHoldIDs: Set(boulder.holdIDs),
-                        onHoldTap: nil,
-                        onEmptyImageTap: nil
-                    )
+            Group {
+                if let wall = currentWall, let boulder = currentBoulder {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            WallCanvasView(
+                                image: image,
+                                holds: wall.holds,
+                                selectedHoldIDs: Set(boulder.holdIDs),
+                                onHoldTap: nil,
+                                onEmptyImageTap: nil
+                            )
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(boulder.name)
-                            .font(.title3.weight(.semibold))
-                        Text("\(boulder.grade) • \(boulder.holdIDs.count) holds • \(tickCount) ticks")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        HStack(spacing: 10) {
-                            Button {
-                                updateTick(increment: true)
-                            } label: {
-                                Label("Tick", systemImage: "checkmark.circle.fill")
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(isUpdatingTick)
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(boulder.name)
+                                    .font(.title3.weight(.semibold))
+                                Text("\(boulder.grade) • \(boulder.holdIDs.count) holds • \(boulder.tickCount) ticks")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                Text("Swipe left or right to switch problems.")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                HStack(spacing: 10) {
+                                    Button {
+                                        updateTick(increment: true)
+                                    } label: {
+                                        Label("Tick", systemImage: "checkmark.circle.fill")
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .disabled(isUpdatingTick)
 
-                            Button {
-                                updateTick(increment: false)
-                            } label: {
-                                Label("Undo Tick", systemImage: "arrow.uturn.backward.circle")
+                                    Button {
+                                        updateTick(increment: false)
+                                    } label: {
+                                        Label("Undo Tick", systemImage: "arrow.uturn.backward.circle")
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(isUpdatingTick || boulder.tickCount == 0)
+                                }
+                                if !boulder.notes.isEmpty {
+                                    Text(boulder.notes)
+                                        .font(.body)
+                                        .foregroundStyle(.secondary)
+                                }
+                                if let errorMessage {
+                                    Text(errorMessage)
+                                        .font(.footnote)
+                                        .foregroundStyle(.red)
+                                }
                             }
-                            .buttonStyle(.bordered)
-                            .disabled(isUpdatingTick || tickCount == 0)
                         }
-                        if !boulder.notes.isEmpty {
-                            Text(boulder.notes)
-                                .font(.body)
-                                .foregroundStyle(.secondary)
-                        }
-                        if let errorMessage {
-                            Text(errorMessage)
-                                .font(.footnote)
-                                .foregroundStyle(.red)
-                        }
+                        .padding()
                     }
+                    .simultaneousGesture(problemSwipeGesture)
+                } else {
+                    ContentUnavailableView(
+                        "Problem Not Available",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text("This problem no longer exists on the wall.")
+                    )
                 }
-                .padding()
             }
             .navigationTitle("Problem Preview")
             .navigationBarTitleDisplayMode(.inline)
@@ -602,7 +618,44 @@ private struct BoulderPreviewSheet: View {
         }
     }
 
+    private var currentWall: Wall? {
+        store.wall(withID: wallID)
+    }
+
+    private var orderedBoulders: [Boulder] {
+        currentWall?.boulders ?? []
+    }
+
+    private var currentBoulder: Boulder? {
+        orderedBoulders.first { $0.id == currentBoulderID }
+    }
+
+    private var currentBoulderIndex: Int? {
+        orderedBoulders.firstIndex { $0.id == currentBoulderID }
+    }
+
+    private var problemSwipeGesture: some Gesture {
+        DragGesture(minimumDistance: 28, coordinateSpace: .local)
+            .onEnded { value in
+                let horizontal = value.translation.width
+                let vertical = value.translation.height
+                guard abs(horizontal) > abs(vertical), abs(horizontal) > 70 else {
+                    return
+                }
+
+                if horizontal < 0 {
+                    showAdjacentBoulder(step: 1)
+                } else {
+                    showAdjacentBoulder(step: -1)
+                }
+            }
+    }
+
     private func updateTick(increment: Bool) {
+        guard let boulder = currentBoulder else {
+            return
+        }
+
         isUpdatingTick = true
         errorMessage = nil
 
@@ -610,15 +663,29 @@ private struct BoulderPreviewSheet: View {
             do {
                 if increment {
                     try await store.incrementBoulderTick(wallID: boulder.wallID, boulderID: boulder.id)
-                    tickCount += 1
                 } else {
                     try await store.decrementBoulderTick(wallID: boulder.wallID, boulderID: boulder.id)
-                    tickCount = max(0, tickCount - 1)
                 }
             } catch {
                 errorMessage = error.localizedDescription
             }
             isUpdatingTick = false
+        }
+    }
+
+    private func showAdjacentBoulder(step: Int) {
+        guard let currentBoulderIndex else {
+            return
+        }
+
+        let nextIndex = currentBoulderIndex + step
+        guard orderedBoulders.indices.contains(nextIndex) else {
+            return
+        }
+
+        withAnimation(.easeInOut(duration: 0.18)) {
+            currentBoulderID = orderedBoulders[nextIndex].id
+            errorMessage = nil
         }
     }
 }

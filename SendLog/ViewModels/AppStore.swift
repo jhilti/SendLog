@@ -129,6 +129,29 @@ final class AppStore: ObservableObject {
         try await persist()
     }
 
+    func deleteWall(wallID: UUID) async throws {
+        guard let index = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+
+        let removedWall = walls.remove(at: index)
+
+        do {
+            try await persist()
+        } catch {
+            walls.insert(removedWall, at: index)
+            throw error
+        }
+
+        imageCache.removeObject(forKey: removedWall.imageFilename as NSString)
+        imageStore.deleteImage(filename: removedWall.imageFilename)
+
+        if let maskFilename = removedWall.maskFilename {
+            maskCache.removeObject(forKey: maskFilename as NSString)
+            imageStore.deleteImage(filename: maskFilename)
+        }
+    }
+
     func setWallMask(wallID: UUID, imageData: Data) async throws {
         guard let index = wallIndex(for: wallID) else {
             throw AppStoreError.wallNotFound

@@ -11,6 +11,7 @@ struct WallLibraryView: View {
     @State private var isImportingBackup = false
     @State private var isExportingBackup = false
     @State private var backupDocument = BackupDocument(data: Data())
+    @State private var wallPendingDeletion: Wall?
     @State private var errorMessage: String?
 
     var body: some View {
@@ -150,8 +151,33 @@ struct WallLibraryView: View {
                     NavigationLink(value: wall.id) {
                         WallRow(wall: wall, image: store.image(for: wall))
                     }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) {
+                            wallPendingDeletion = wall
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
                 }
                 .listStyle(.plain)
+                .confirmationDialog(
+                    "Delete Wall?",
+                    isPresented: Binding(
+                        get: { wallPendingDeletion != nil },
+                        set: { value in
+                            if !value { wallPendingDeletion = nil }
+                        }
+                    ),
+                    titleVisibility: .visible,
+                    presenting: wallPendingDeletion
+                ) { wall in
+                    Button("Delete", role: .destructive) {
+                        deleteWall(wall)
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: { wall in
+                    Text("Delete \"\(wall.name)\" and all of its holds and problems? This cannot be undone.")
+                }
             }
         } else {
             if allProblems.isEmpty {
@@ -252,6 +278,18 @@ struct WallLibraryView: View {
                 selectedTab = .walls
                 searchText = ""
                 selectedGradeFilter = nil
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func deleteWall(_ wall: Wall) {
+        wallPendingDeletion = nil
+
+        Task {
+            do {
+                try await store.deleteWall(wallID: wall.id)
             } catch {
                 errorMessage = error.localizedDescription
             }
