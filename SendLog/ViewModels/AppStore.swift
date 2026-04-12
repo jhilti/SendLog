@@ -194,7 +194,11 @@ final class AppStore: ObservableObject {
             throw AppStoreError.missingWallImage
         }
 
-        let detected = try await detector.detectHolds(in: detectionImage)
+        let detected = try await detector.detectHolds(in: detectionImage).map { hold in
+            var squared = hold
+            squared.rect = hold.rect.squareCentered()
+            return squared
+        }
         walls[index].holds = detected
         walls[index].updatedAt = Date()
         try await persist()
@@ -244,8 +248,9 @@ final class AppStore: ObservableObject {
         )
 
         var newHold = try await detector.segmentHold(around: point, in: detectionImage)
-            ?? manualRingMarker(at: point)
+            ?? manualBoxHold(at: point)
         newHold.source = .manual
+        newHold.contour = nil
         walls[index].holds.append(newHold)
         walls[index].updatedAt = Date()
         try await persist()
@@ -262,7 +267,7 @@ final class AppStore: ObservableObject {
             y: min(max(0, normalizedPoint.y), 1)
         )
 
-        let newHold = manualRingMarker(at: point)
+        let newHold = manualBoxHold(at: point)
         walls[index].holds.append(newHold)
         walls[index].updatedAt = Date()
         try await persist()
@@ -282,6 +287,22 @@ final class AppStore: ObservableObject {
             y: min(max(0, normalizedPoint.y), 1)
         )
         walls[wallIndex].holds[holdIndex] = movedHold(walls[wallIndex].holds[holdIndex], to: clampedPoint)
+        walls[wallIndex].updatedAt = Date()
+        try await persist()
+    }
+
+    func resizeHold(wallID: UUID, holdID: UUID, to normalizedRect: NormalizedRect) async throws {
+        guard let wallIndex = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+        guard let holdIndex = walls[wallIndex].holds.firstIndex(where: { $0.id == holdID }) else {
+            return
+        }
+
+        walls[wallIndex].holds[holdIndex] = resizedHold(
+            walls[wallIndex].holds[holdIndex],
+            to: normalizedRect.squareAnchoredTopLeading()
+        )
         walls[wallIndex].updatedAt = Date()
         try await persist()
     }
@@ -551,20 +572,13 @@ final class AppStore: ObservableObject {
         return rendered
     }
 
-    private func manualRingMarker(at normalizedPoint: CGPoint) -> Hold {
-        let markerSize: CGFloat = 0.05
-        let rect = NormalizedRect(
-            x: normalizedPoint.x - (markerSize / 2),
-            y: normalizedPoint.y - (markerSize / 2),
-            width: markerSize,
-            height: markerSize
-        ).clamped()
+    private func manualBoxHold(at normalizedPoint: CGPoint) -> Hold {
+        let rect = NormalizedRect.square(centeredAt: normalizedPoint, side: 0.08)
 
-        let contour = ringContour(around: normalizedPoint)
         return Hold(
             rect: rect,
-            contour: contour.isEmpty ? nil : contour,
-            confidence: 0.2,
+            contour: nil,
+            confidence: 0.35,
             source: .manual
         )
     }
@@ -621,6 +635,30 @@ final class AppStore: ObservableObject {
         }
 
         return moved
+    }
+
+    private func resizedHold(_ hold: Hold, to normalizedRect: NormalizedRect) -> Hold {
+        let clampedRect = normalizedRect.clamped()
+        var resized = hold
+        let previousRect = hold.rect
+        resized.rect = clampedRect
+
+        guard let contour = hold.contour,
+              previousRect.width > 0.0001,
+              previousRect.height > 0.0001 else {
+            resized.contour = nil
+            return resized
+        }
+
+        resized.contour = contour.map { point in
+            let normalizedX = (point.x - previousRect.x) / previousRect.width
+            let normalizedY = (point.y - previousRect.y) / previousRect.height
+            return NormalizedPoint(
+                x: clampedRect.x + (normalizedX * clampedRect.width),
+                y: clampedRect.y + (normalizedY * clampedRect.height)
+            ).clamped()
+        }
+        return resized
     }
 
     private func decimatedContour(_ points: [CGPoint], maxCount: Int) -> [CGPoint] {
