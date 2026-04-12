@@ -8,6 +8,7 @@ struct WallLibraryView: View {
     @State private var previewTarget: BoulderPreviewTarget?
     @State private var searchText = ""
     @State private var selectedGradeFilter: ClimbingGrade?
+    @State private var selectedProblemSort: ProblemSort = .date
     @State private var isShowingImportConfirmation = false
     @State private var isImportingBackup = false
     @State private var isExportingBackup = false
@@ -60,6 +61,18 @@ struct WallLibraryView: View {
                     }
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    if selectedTab == .problems {
+                        Menu {
+                            ForEach(ProblemSort.allCases) { sort in
+                                Button(sort.rawValue) {
+                                    selectedProblemSort = sort
+                                }
+                            }
+                        } label: {
+                            Label(selectedProblemSort.rawValue, systemImage: "arrow.up.arrow.down.circle")
+                        }
+                    }
+
                     Menu {
                         Button {
                             prepareBackupExport()
@@ -280,7 +293,6 @@ struct WallLibraryView: View {
                     BoulderLibraryEntry(wallID: wall.id, wallName: wall.name, boulder: boulder)
                 }
             }
-            .sorted { $0.boulder.createdAt > $1.boulder.createdAt }
     }
 
     private var filteredProblems: [BoulderLibraryEntry] {
@@ -301,6 +313,46 @@ struct WallLibraryView: View {
 
             return gradeMatches && searchMatches
         }
+        .sorted(by: problemSortComparator)
+    }
+
+    private func problemSortComparator(_ lhs: BoulderLibraryEntry, _ rhs: BoulderLibraryEntry) -> Bool {
+        switch selectedProblemSort {
+        case .difficulty:
+            let lhsDifficulty = gradeRank(for: lhs.boulder.grade)
+            let rhsDifficulty = gradeRank(for: rhs.boulder.grade)
+            if lhsDifficulty != rhsDifficulty {
+                return lhsDifficulty > rhsDifficulty
+            }
+            if lhs.boulder.tickCount != rhs.boulder.tickCount {
+                return lhs.boulder.tickCount > rhs.boulder.tickCount
+            }
+            return lhs.boulder.createdAt > rhs.boulder.createdAt
+        case .ticks:
+            if lhs.boulder.tickCount != rhs.boulder.tickCount {
+                return lhs.boulder.tickCount > rhs.boulder.tickCount
+            }
+            let lhsDifficulty = gradeRank(for: lhs.boulder.grade)
+            let rhsDifficulty = gradeRank(for: rhs.boulder.grade)
+            if lhsDifficulty != rhsDifficulty {
+                return lhsDifficulty > rhsDifficulty
+            }
+            return lhs.boulder.createdAt > rhs.boulder.createdAt
+        case .date:
+            if lhs.boulder.createdAt != rhs.boulder.createdAt {
+                return lhs.boulder.createdAt > rhs.boulder.createdAt
+            }
+            let lhsDifficulty = gradeRank(for: lhs.boulder.grade)
+            let rhsDifficulty = gradeRank(for: rhs.boulder.grade)
+            if lhsDifficulty != rhsDifficulty {
+                return lhsDifficulty > rhsDifficulty
+            }
+            return lhs.boulder.tickCount > rhs.boulder.tickCount
+        }
+    }
+
+    private func gradeRank(for rawGrade: String) -> Int {
+        ClimbingGrade.allCases.firstIndex(where: { $0.rawValue == rawGrade }) ?? -1
     }
 
     private var allBoulderLogEntries: [BoulderLogLibraryEntry] {
@@ -517,6 +569,14 @@ private enum LibraryTab: String, CaseIterable, Identifiable {
             return "Search sessions, problems, or wall"
         }
     }
+}
+
+private enum ProblemSort: String, CaseIterable, Identifiable {
+    case difficulty = "Difficulty"
+    case ticks = "Ticks"
+    case date = "Date"
+
+    var id: String { rawValue }
 }
 
 private struct BoulderLibraryEntry: Identifiable {
