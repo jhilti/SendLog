@@ -213,9 +213,15 @@ struct WallLibraryView: View {
                 ContentUnavailableView.search(text: searchText)
             } else {
                 List(filteredProblems) { entry in
-                    NavigationLink(value: entry.wallID) {
+                    Button {
+                        previewTarget = BoulderPreviewTarget(
+                            wallID: entry.wallID,
+                            boulderID: entry.boulder.id
+                        )
+                    } label: {
                         ProblemLibraryRow(entry: entry)
                     }
+                    .buttonStyle(.plain)
                 }
                 .listStyle(.plain)
             }
