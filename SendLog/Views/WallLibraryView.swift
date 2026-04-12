@@ -5,7 +5,6 @@ struct WallLibraryView: View {
     @EnvironmentObject private var store: AppStore
     @State private var isShowingCreateWall = false
     @State private var selectedTab: LibraryTab = .walls
-    @State private var selectedLogFilter: LogFilter = .all
     @State private var previewTarget: BoulderPreviewTarget?
     @State private var searchText = ""
     @State private var selectedGradeFilter: ClimbingGrade?
@@ -14,6 +13,7 @@ struct WallLibraryView: View {
     @State private var isExportingBackup = false
     @State private var backupDocument = BackupDocument(data: Data())
     @State private var wallPendingDeletion: Wall?
+    @State private var expandedLogGroupIDs: Set<String> = []
     @State private var errorMessage: String?
 
     var body: some View {
@@ -220,34 +220,41 @@ struct WallLibraryView: View {
                 .listStyle(.plain)
             }
         } else {
-            if allLogEntries.isEmpty {
+            if allLogGroups.isEmpty {
                 ContentUnavailableView(
                     "No Log Entries Yet",
                     systemImage: "list.bullet.rectangle",
                     description: Text("Log attempts or ticks on a problem to build your activity history.")
                 )
-            } else if filteredLogEntries.isEmpty {
+            } else if filteredLogGroups.isEmpty {
                 ContentUnavailableView.search(text: searchText)
             } else {
-                VStack(spacing: 0) {
-                    Picker("Log Filter", selection: $selectedLogFilter) {
-                        ForEach(LogFilter.allCases) { filter in
-                            Text(filter.rawValue).tag(filter)
-                        }
+                List(filteredLogGroups) { group in
+                    SessionLogGroupRow(
+                        group: group,
+                        isExpanded: expansionBinding(for: group.id)
+                    ) { target in
+                        previewTarget = target
                     }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal)
-                    .padding(.top, 4)
-
-                    List(filteredLogEntries) { entry in
-                        LogLibraryRow(entry: entry) { target in
-                            previewTarget = target
-                        }
-                    }
-                    .listStyle(.plain)
                 }
+                .listStyle(.plain)
             }
         }
+    }
+
+    private func expansionBinding(for groupID: String) -> Binding<Bool> {
+        Binding(
+            get: {
+                !trimmedQuery.isEmpty || expandedLogGroupIDs.contains(groupID)
+            },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedLogGroupIDs.insert(groupID)
+                } else {
+                    expandedLogGroupIDs.remove(groupID)
+                }
+            }
+        )
     }
 
     private var filteredWalls: [Wall] {
@@ -290,68 +297,126 @@ struct WallLibraryView: View {
         }
     }
 
-    private var allLogEntries: [LibraryLogEntry] {
-        let boulderEntries = store.walls
+    private var allBoulderLogEntries: [BoulderLogLibraryEntry] {
+        store.walls
             .flatMap { wall in
                 wall.boulders.flatMap { boulder in
                     boulder.logEntries.map { logEntry in
-                        LibraryLogEntry.boulder(
-                            BoulderLogLibraryEntry(
-                                wallID: wall.id,
-                                wallName: wall.name,
-                                boulder: boulder,
-                                logEntry: logEntry
-                            )
+                        BoulderLogLibraryEntry(
+                            wallID: wall.id,
+                            wallName: wall.name,
+                            boulder: boulder,
+                            logEntry: logEntry
                         )
                     }
                 }
             }
-
-        let sessionEntries = store.sessionLogs.map { sessionLog in
-            LibraryLogEntry.session(sessionLog)
-        }
-
-        return (boulderEntries + sessionEntries)
-            .sorted { $0.recordedAt > $1.recordedAt }
+            .sorted { $0.logEntry.recordedAt < $1.logEntry.recordedAt }
     }
 
-    private var filteredLogEntries: [LibraryLogEntry] {
+    private var allLogGroups: [SessionLogGroup] {
+        let sessions = store.sessionLogs.sorted { $0.recordedAt < $1.recordedAt }
+        var assignedEntryIDs: Set<UUID> = []
+        var groups = sessions.enumerated().map { index, session in
+            let nextSessionStart = sessions.indices.contains(index + 1)
+                ? sessions[index + 1].recordedAt
+                : Date.distantFuture
+            let candidateEntries = allBoulderLogEntries.filter { entry in
+                !assignedEntryIDs.contains(entry.id)
+                    && entry.logEntry.recordedAt >= session.recordedAt
+                    && entry.logEntry.recordedAt < nextSessionStart
+            }
+            let detailEntries = reconstructedEntries(for: session, from: candidateEntries)
+            assignedEntryIDs.formUnion(detailEntries.map(\.id))
+
+            return SessionLogGroup(
+                id: session.id.uuidString,
+                title: "Session",
+                recordedAt: session.recordedAt,
+                duration: session.duration,
+                attempts: session.attempts,
+                ticks: session.ticks,
+                detailEntries: detailEntries.sorted { $0.logEntry.recordedAt > $1.logEntry.recordedAt },
+                isSession: true
+            )
+        }
+
+        let ungroupedEntries = allBoulderLogEntries
+            .filter { !assignedEntryIDs.contains($0.id) }
+            .sorted { $0.logEntry.recordedAt > $1.logEntry.recordedAt }
+
+        if let latestUngroupedEntry = ungroupedEntries.first {
+            groups.append(
+                SessionLogGroup(
+                    id: "ungrouped-activity",
+                    title: "Other Activity",
+                    recordedAt: latestUngroupedEntry.logEntry.recordedAt,
+                    duration: nil,
+                    attempts: ungroupedEntries.reduce(0) { $0 + $1.logEntry.attempts },
+                    ticks: ungroupedEntries.reduce(0) { $0 + $1.logEntry.ticks },
+                    detailEntries: ungroupedEntries,
+                    isSession: false
+                )
+            )
+        }
+
+        return groups.sorted { $0.recordedAt > $1.recordedAt }
+    }
+
+    private var filteredLogGroups: [SessionLogGroup] {
         let query = trimmedQuery
+        guard !query.isEmpty else {
+            return allLogGroups
+        }
 
-        return allLogEntries.filter { entry in
-            let filterMatches: Bool
-            switch selectedLogFilter {
-            case .all:
-                filterMatches = true
-            case .sessions:
-                if case .session = entry {
-                    filterMatches = true
-                } else {
-                    filterMatches = false
-                }
-            }
+        return allLogGroups.filter { group in
+            let timestamp = Self.logSearchDateFormatter.string(from: group.recordedAt)
+            let summaryMatches =
+                group.title.localizedCaseInsensitiveContains(query)
+                || timestamp.localizedCaseInsensitiveContains(query)
+                || group.summaryText.localizedCaseInsensitiveContains(query)
 
-            guard filterMatches else {
-                return false
-            }
-
-            guard !query.isEmpty else {
+            guard !summaryMatches else {
                 return true
             }
 
-            let timestamp = Self.logSearchDateFormatter.string(from: entry.recordedAt)
-            switch entry {
-            case .boulder(let boulderEntry):
-                return boulderEntry.boulder.name.localizedCaseInsensitiveContains(query)
-                    || boulderEntry.boulder.grade.localizedCaseInsensitiveContains(query)
-                    || boulderEntry.wallName.localizedCaseInsensitiveContains(query)
-                    || timestamp.localizedCaseInsensitiveContains(query)
-            case .session(let sessionEntry):
-                return "session".localizedCaseInsensitiveContains(query)
-                    || formattedSessionDuration(sessionEntry.duration).localizedCaseInsensitiveContains(query)
-                    || timestamp.localizedCaseInsensitiveContains(query)
+            return group.detailEntries.contains { entry in
+                let entryTimestamp = Self.logSearchDateFormatter.string(from: entry.logEntry.recordedAt)
+                return entry.boulder.name.localizedCaseInsensitiveContains(query)
+                    || entry.boulder.grade.localizedCaseInsensitiveContains(query)
+                    || entry.wallName.localizedCaseInsensitiveContains(query)
+                    || entryTimestamp.localizedCaseInsensitiveContains(query)
             }
         }
+    }
+
+    private func reconstructedEntries(
+        for session: SessionLogEntry,
+        from entries: [BoulderLogLibraryEntry]
+    ) -> [BoulderLogLibraryEntry] {
+        guard session.attempts > 0 || session.ticks > 0 else {
+            return []
+        }
+
+        var matchedEntries: [BoulderLogLibraryEntry] = []
+        var matchedAttempts = 0
+        var matchedTicks = 0
+
+        for entry in entries.sorted(by: { $0.logEntry.recordedAt < $1.logEntry.recordedAt }) {
+            matchedEntries.append(entry)
+            matchedAttempts += entry.logEntry.attempts
+            matchedTicks += entry.logEntry.ticks
+
+            if matchedAttempts == session.attempts && matchedTicks == session.ticks {
+                return matchedEntries
+            }
+
+            if matchedAttempts > session.attempts || matchedTicks > session.ticks {
+                return []
+            }
+        }
+
+        return []
     }
 
     private func formattedSessionDuration(_ duration: TimeInterval) -> String {
@@ -441,16 +506,9 @@ private enum LibraryTab: String, CaseIterable, Identifiable {
         case .problems:
             return "Search problems or wall"
         case .logs:
-            return "Search log entries"
+            return "Search sessions, problems, or wall"
         }
     }
-}
-
-private enum LogFilter: String, CaseIterable, Identifiable {
-    case all = "All"
-    case sessions = "Sessions"
-
-    var id: String { rawValue }
 }
 
 private struct BoulderLibraryEntry: Identifiable {
@@ -470,26 +528,30 @@ private struct BoulderLogLibraryEntry: Identifiable {
     var id: UUID { logEntry.id }
 }
 
-private enum LibraryLogEntry: Identifiable {
-    case boulder(BoulderLogLibraryEntry)
-    case session(SessionLogEntry)
+private struct SessionLogGroup: Identifiable {
+    let id: String
+    let title: String
+    let recordedAt: Date
+    let duration: TimeInterval?
+    let attempts: Int
+    let ticks: Int
+    let detailEntries: [BoulderLogLibraryEntry]
+    let isSession: Bool
 
-    var id: UUID {
-        switch self {
-        case .boulder(let entry):
-            return entry.id
-        case .session(let entry):
-            return entry.id
+    var summaryText: String {
+        if let duration {
+            return "\(formattedDuration(duration)) • Attempts: \(attempts) • Ticks: \(ticks)"
         }
+
+        return "Attempts: \(attempts) • Ticks: \(ticks)"
     }
 
-    var recordedAt: Date {
-        switch self {
-        case .boulder(let entry):
-            return entry.logEntry.recordedAt
-        case .session(let entry):
-            return entry.recordedAt
-        }
+    private func formattedDuration(_ duration: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(duration.rounded(.down)))
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
     }
 }
 
@@ -580,8 +642,9 @@ private struct ProblemLibraryRow: View {
     }
 }
 
-private struct LogLibraryRow: View {
-    let entry: LibraryLogEntry
+private struct SessionLogGroupRow: View {
+    let group: SessionLogGroup
+    @Binding var isExpanded: Bool
     let onOpen: (BoulderPreviewTarget?) -> Void
 
     private static let dateFormatter: DateFormatter = {
@@ -592,73 +655,42 @@ private struct LogLibraryRow: View {
     }()
 
     var body: some View {
-        switch entry {
-        case .boulder(let boulderEntry):
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(boulderEntry.wallName)
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                    Text(boulderEntry.logEntry.recordedAt, formatter: Self.dateFormatter)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Button {
-                    onOpen(
-                        BoulderPreviewTarget(
-                            wallID: boulderEntry.wallID,
-                            boulderID: boulderEntry.boulder.id
-                        )
-                    )
-                } label: {
-                    HStack(spacing: 6) {
-                        Text(boulderEntry.boulder.name)
-                            .font(.headline)
-                        Text(boulderEntry.boulder.grade)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Image(systemName: "arrow.up.forward.square")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+        DisclosureGroup(isExpanded: $isExpanded) {
+            if group.detailEntries.isEmpty {
+                Text(group.isSession ? "No problem logs matched this session yet." : "No activity details available.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 8)
+            } else {
+                VStack(spacing: 12) {
+                    ForEach(group.detailEntries) { entry in
+                        SessionLogDetailRow(entry: entry, onOpen: onOpen)
                     }
                 }
-                .buttonStyle(.plain)
-
-                Text("Attempts: \(boulderEntry.logEntry.attempts) • Ticks: \(boulderEntry.logEntry.ticks)")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                .padding(.top, 8)
             }
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                onOpen(
-                    BoulderPreviewTarget(
-                        wallID: boulderEntry.wallID,
-                        boulderID: boulderEntry.boulder.id
-                    )
-                )
-            }
-        case .session(let sessionEntry):
+        } label: {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Session")
+                    Text(group.title)
                         .font(.subheadline.weight(.semibold))
                     Spacer()
-                    Text(sessionEntry.recordedAt, formatter: Self.dateFormatter)
+                    Text(group.recordedAt, formatter: Self.dateFormatter)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
-                Text(formattedDuration(sessionEntry.duration))
-                    .font(.headline)
+                if let duration = group.duration {
+                    Text(formattedDuration(duration))
+                        .font(.headline)
+                }
 
-                Text("Attempts: \(sessionEntry.attempts) • Ticks: \(sessionEntry.ticks)")
+                Text("\(group.summaryText) • \(group.detailEntries.count) climbs")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
-            .padding(.vertical, 4)
         }
+        .padding(.vertical, 4)
     }
 
     private func formattedDuration(_ duration: TimeInterval) -> String {
@@ -667,6 +699,57 @@ private struct LogLibraryRow: View {
         let minutes = (totalSeconds % 3600) / 60
         let seconds = totalSeconds % 60
         return "Duration: " + String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+    }
+}
+
+private struct SessionLogDetailRow: View {
+    let entry: BoulderLogLibraryEntry
+    let onOpen: (BoulderPreviewTarget?) -> Void
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter
+    }()
+
+    var body: some View {
+        Button {
+            onOpen(
+                BoulderPreviewTarget(
+                    wallID: entry.wallID,
+                    boulderID: entry.boulder.id
+                )
+            )
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(entry.boulder.name)
+                            .font(.headline)
+                        Text(entry.boulder.grade)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text(entry.wallName)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    Text("Attempts: \(entry.logEntry.attempts) • Ticks: \(entry.logEntry.ticks)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(entry.logEntry.recordedAt, formatter: Self.timeFormatter)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
