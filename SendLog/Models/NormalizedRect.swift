@@ -26,6 +26,44 @@ struct NormalizedRect: Codable, Hashable {
         return NormalizedRect(x: clampedX, y: clampedY, width: clampedWidth, height: clampedHeight)
     }
 
+    func squareCentered() -> NormalizedRect {
+        let clampedCenterX = min(max(0, x + (width / 2)), 1)
+        let clampedCenterY = min(max(0, y + (height / 2)), 1)
+        let side = min(max(0.01, max(width, height)), 1)
+        let originX = min(max(0, clampedCenterX - (side / 2)), 1 - side)
+        let originY = min(max(0, clampedCenterY - (side / 2)), 1 - side)
+
+        return NormalizedRect(
+            x: originX,
+            y: originY,
+            width: side,
+            height: side
+        )
+    }
+
+    func squareAnchoredTopLeading() -> NormalizedRect {
+        let clampedX = min(max(0, x), 0.99)
+        let clampedY = min(max(0, y), 0.99)
+        let maxSide = max(0.01, min(1 - clampedX, 1 - clampedY))
+        let side = min(max(0.01, max(width, height)), maxSide)
+
+        return NormalizedRect(
+            x: clampedX,
+            y: clampedY,
+            width: side,
+            height: side
+        )
+    }
+
+    static func square(centeredAt point: CGPoint, side: CGFloat) -> NormalizedRect {
+        NormalizedRect(
+            x: point.x - (side / 2),
+            y: point.y - (side / 2),
+            width: side,
+            height: side
+        ).squareCentered()
+    }
+
     func toCGRect(in imageFrame: CGRect) -> CGRect {
         CGRect(
             x: imageFrame.minX + (x * imageFrame.width),
