@@ -371,9 +371,11 @@ struct WallLibraryView: View {
 
         return allLogGroups.filter { group in
             let timestamp = Self.logSearchDateFormatter.string(from: group.recordedAt)
+            let durationText = group.duration.map(formattedSessionDuration) ?? ""
             let summaryMatches =
                 group.title.localizedCaseInsensitiveContains(query)
                 || timestamp.localizedCaseInsensitiveContains(query)
+                || durationText.localizedCaseInsensitiveContains(query)
                 || group.summaryText.localizedCaseInsensitiveContains(query)
 
             guard !summaryMatches else {
@@ -539,19 +541,7 @@ private struct SessionLogGroup: Identifiable {
     let isSession: Bool
 
     var summaryText: String {
-        if let duration {
-            return "\(formattedDuration(duration)) • Attempts: \(attempts) • Ticks: \(ticks)"
-        }
-
         return "Attempts: \(attempts) • Ticks: \(ticks)"
-    }
-
-    private func formattedDuration(_ duration: TimeInterval) -> String {
-        let totalSeconds = max(0, Int(duration.rounded(.down)))
-        let hours = totalSeconds / 3600
-        let minutes = (totalSeconds % 3600) / 60
-        let seconds = totalSeconds % 60
-        return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
     }
 }
 
@@ -820,13 +810,23 @@ struct SessionTimerOverlayModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .overlay {
-                GeometryReader { geometry in
+                GeometryReader { _ in
                     SessionTimerFloatingBadge()
-                        .padding(.top, geometry.safeAreaInsets.top + 8)
+                        .padding(.top, topPadding)
                         .padding(.leading, 12)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
             }
+    }
+
+    private var topPadding: CGFloat {
+        let windowTopInset = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?
+            .safeAreaInsets.top ?? 0
+
+        return windowTopInset + 18
     }
 }
 
