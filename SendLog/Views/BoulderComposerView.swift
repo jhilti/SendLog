@@ -104,6 +104,7 @@ struct BoulderComposerView: View {
                 }
             }
         }
+        .sessionTimerOverlay()
     }
 
     private static func grade(from rawValue: String) -> ClimbingGrade {

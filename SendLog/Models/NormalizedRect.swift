@@ -26,6 +26,20 @@ struct NormalizedRect: Codable, Hashable {
         return NormalizedRect(x: clampedX, y: clampedY, width: clampedWidth, height: clampedHeight)
     }
 
+    func scaledAroundCenter(x widthScale: CGFloat, y heightScale: CGFloat) -> NormalizedRect {
+        let scaledWidth = max(0.01, width * widthScale)
+        let scaledHeight = max(0.01, height * heightScale)
+        let centerX = x + (width / 2)
+        let centerY = y + (height / 2)
+
+        return NormalizedRect(
+            x: centerX - (scaledWidth / 2),
+            y: centerY - (scaledHeight / 2),
+            width: scaledWidth,
+            height: scaledHeight
+        ).clamped()
+    }
+
     func squareCentered() -> NormalizedRect {
         let clampedCenterX = min(max(0, x + (width / 2)), 1)
         let clampedCenterY = min(max(0, y + (height / 2)), 1)

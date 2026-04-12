@@ -5,6 +5,8 @@ struct WallLibraryView: View {
     @EnvironmentObject private var store: AppStore
     @State private var isShowingCreateWall = false
     @State private var selectedTab: LibraryTab = .walls
+    @State private var selectedLogFilter: LogFilter = .all
+    @State private var previewTarget: BoulderPreviewTarget?
     @State private var searchText = ""
     @State private var selectedGradeFilter: ClimbingGrade?
     @State private var isShowingImportConfirmation = false
@@ -21,6 +23,10 @@ struct WallLibraryView: View {
                     .ignoresSafeArea()
 
                 VStack(spacing: 12) {
+                    SessionTimerCard()
+                        .padding(.horizontal)
+                        .padding(.top, 8)
+
                     Picker("Library", selection: $selectedTab) {
                         ForEach(LibraryTab.allCases) { tab in
                             Text(tab.rawValue).tag(tab)
@@ -83,6 +89,22 @@ struct WallLibraryView: View {
             .fullScreenCover(isPresented: $isShowingCreateWall) {
                 CreateWallSheet()
             }
+            .fullScreenCover(item: $previewTarget) { target in
+                if let wall = store.wall(withID: target.wallID),
+                   let image = store.image(for: wall) {
+                    BoulderPreviewSheet(
+                        wallID: target.wallID,
+                        image: image,
+                        initialBoulderID: target.boulderID
+                    )
+                } else {
+                    ContentUnavailableView(
+                        "Problem Not Available",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text("Could not load this problem.")
+                    )
+                }
+            }
             .confirmationDialog(
                 "Import backup and replace current walls/problems?",
                 isPresented: $isShowingImportConfirmation,
@@ -131,6 +153,7 @@ struct WallLibraryView: View {
                 Text(errorMessage ?? "Unknown error")
             }
         }
+        .sessionTimerOverlay()
     }
 
     @ViewBuilder
@@ -179,7 +202,7 @@ struct WallLibraryView: View {
                     Text("Delete \"\(wall.name)\" and all of its holds and problems? This cannot be undone.")
                 }
             }
-        } else {
+        } else if selectedTab == .problems {
             if allProblems.isEmpty {
                 ContentUnavailableView(
                     "No Problems Yet",
@@ -195,6 +218,34 @@ struct WallLibraryView: View {
                     }
                 }
                 .listStyle(.plain)
+            }
+        } else {
+            if allLogEntries.isEmpty {
+                ContentUnavailableView(
+                    "No Log Entries Yet",
+                    systemImage: "list.bullet.rectangle",
+                    description: Text("Log attempts or ticks on a problem to build your activity history.")
+                )
+            } else if filteredLogEntries.isEmpty {
+                ContentUnavailableView.search(text: searchText)
+            } else {
+                VStack(spacing: 0) {
+                    Picker("Log Filter", selection: $selectedLogFilter) {
+                        ForEach(LogFilter.allCases) { filter in
+                            Text(filter.rawValue).tag(filter)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal)
+                    .padding(.top, 4)
+
+                    List(filteredLogEntries) { entry in
+                        LogLibraryRow(entry: entry) { target in
+                            previewTarget = target
+                        }
+                    }
+                    .listStyle(.plain)
+                }
             }
         }
     }
@@ -239,6 +290,78 @@ struct WallLibraryView: View {
         }
     }
 
+    private var allLogEntries: [LibraryLogEntry] {
+        let boulderEntries = store.walls
+            .flatMap { wall in
+                wall.boulders.flatMap { boulder in
+                    boulder.logEntries.map { logEntry in
+                        LibraryLogEntry.boulder(
+                            BoulderLogLibraryEntry(
+                                wallID: wall.id,
+                                wallName: wall.name,
+                                boulder: boulder,
+                                logEntry: logEntry
+                            )
+                        )
+                    }
+                }
+            }
+
+        let sessionEntries = store.sessionLogs.map { sessionLog in
+            LibraryLogEntry.session(sessionLog)
+        }
+
+        return (boulderEntries + sessionEntries)
+            .sorted { $0.recordedAt > $1.recordedAt }
+    }
+
+    private var filteredLogEntries: [LibraryLogEntry] {
+        let query = trimmedQuery
+
+        return allLogEntries.filter { entry in
+            let filterMatches: Bool
+            switch selectedLogFilter {
+            case .all:
+                filterMatches = true
+            case .sessions:
+                if case .session = entry {
+                    filterMatches = true
+                } else {
+                    filterMatches = false
+                }
+            }
+
+            guard filterMatches else {
+                return false
+            }
+
+            guard !query.isEmpty else {
+                return true
+            }
+
+            let timestamp = Self.logSearchDateFormatter.string(from: entry.recordedAt)
+            switch entry {
+            case .boulder(let boulderEntry):
+                return boulderEntry.boulder.name.localizedCaseInsensitiveContains(query)
+                    || boulderEntry.boulder.grade.localizedCaseInsensitiveContains(query)
+                    || boulderEntry.wallName.localizedCaseInsensitiveContains(query)
+                    || timestamp.localizedCaseInsensitiveContains(query)
+            case .session(let sessionEntry):
+                return "session".localizedCaseInsensitiveContains(query)
+                    || formattedSessionDuration(sessionEntry.duration).localizedCaseInsensitiveContains(query)
+                    || timestamp.localizedCaseInsensitiveContains(query)
+            }
+        }
+    }
+
+    private func formattedSessionDuration(_ duration: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(duration.rounded(.down)))
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+    }
+
     private var trimmedQuery: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -250,6 +373,13 @@ struct WallLibraryView: View {
     private static let backupDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd-HHmm"
+        return formatter
+    }()
+
+    private static let logSearchDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
         return formatter
     }()
 
@@ -300,6 +430,7 @@ struct WallLibraryView: View {
 private enum LibraryTab: String, CaseIterable, Identifiable {
     case walls = "Walls"
     case problems = "Problems"
+    case logs = "Log"
 
     var id: String { rawValue }
 
@@ -309,8 +440,17 @@ private enum LibraryTab: String, CaseIterable, Identifiable {
             return "Search walls"
         case .problems:
             return "Search problems or wall"
+        case .logs:
+            return "Search log entries"
         }
     }
+}
+
+private enum LogFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case sessions = "Sessions"
+
+    var id: String { rawValue }
 }
 
 private struct BoulderLibraryEntry: Identifiable {
@@ -319,6 +459,45 @@ private struct BoulderLibraryEntry: Identifiable {
     let boulder: Boulder
 
     var id: UUID { boulder.id }
+}
+
+private struct BoulderLogLibraryEntry: Identifiable {
+    let wallID: UUID
+    let wallName: String
+    let boulder: Boulder
+    let logEntry: BoulderLogEntry
+
+    var id: UUID { logEntry.id }
+}
+
+private enum LibraryLogEntry: Identifiable {
+    case boulder(BoulderLogLibraryEntry)
+    case session(SessionLogEntry)
+
+    var id: UUID {
+        switch self {
+        case .boulder(let entry):
+            return entry.id
+        case .session(let entry):
+            return entry.id
+        }
+    }
+
+    var recordedAt: Date {
+        switch self {
+        case .boulder(let entry):
+            return entry.logEntry.recordedAt
+        case .session(let entry):
+            return entry.recordedAt
+        }
+    }
+}
+
+private struct BoulderPreviewTarget: Identifiable {
+    let wallID: UUID
+    let boulderID: UUID
+
+    var id: UUID { boulderID }
 }
 
 private struct WallRow: View {
@@ -381,7 +560,7 @@ private struct ProblemLibraryRow: View {
                 Text(entry.boulder.grade)
                     .font(.subheadline.weight(.semibold))
             }
-            Text("\(entry.boulder.holdIDs.count) holds • \(entry.boulder.tickCount) ticks")
+            Text("\(entry.boulder.holdIDs.count) holds • \(entry.boulder.attemptCount) attempts • \(entry.boulder.tickCount) ticks")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             Text("Wall: \(entry.wallName)")
@@ -398,5 +577,217 @@ private struct ProblemLibraryRow: View {
                 .foregroundStyle(.tertiary)
         }
         .padding(.vertical, 4)
+    }
+}
+
+private struct LogLibraryRow: View {
+    let entry: LibraryLogEntry
+    let onOpen: (BoulderPreviewTarget?) -> Void
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
+    var body: some View {
+        switch entry {
+        case .boulder(let boulderEntry):
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(boulderEntry.wallName)
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Text(boulderEntry.logEntry.recordedAt, formatter: Self.dateFormatter)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Button {
+                    onOpen(
+                        BoulderPreviewTarget(
+                            wallID: boulderEntry.wallID,
+                            boulderID: boulderEntry.boulder.id
+                        )
+                    )
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(boulderEntry.boulder.name)
+                            .font(.headline)
+                        Text(boulderEntry.boulder.grade)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Image(systemName: "arrow.up.forward.square")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+
+                Text("Attempts: \(boulderEntry.logEntry.attempts) • Ticks: \(boulderEntry.logEntry.ticks)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                onOpen(
+                    BoulderPreviewTarget(
+                        wallID: boulderEntry.wallID,
+                        boulderID: boulderEntry.boulder.id
+                    )
+                )
+            }
+        case .session(let sessionEntry):
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Session")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Text(sessionEntry.recordedAt, formatter: Self.dateFormatter)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text(formattedDuration(sessionEntry.duration))
+                    .font(.headline)
+
+                Text("Attempts: \(sessionEntry.attempts) • Ticks: \(sessionEntry.ticks)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private func formattedDuration(_ duration: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(duration.rounded(.down)))
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+        return "Duration: " + String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+    }
+}
+
+private struct SessionTimerCard: View {
+    @EnvironmentObject private var store: AppStore
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let elapsed = store.currentSessionDuration(at: context.date)
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Session Timer")
+                            .font(.headline)
+                        Text(store.isSessionRunning ? "Running" : "Ready")
+                            .font(.subheadline)
+                            .foregroundStyle(store.isSessionRunning ? .green : .secondary)
+                    }
+
+                    Spacer()
+
+                    Text(formatted(duration: elapsed))
+                        .font(.system(.title2, design: .rounded).weight(.semibold))
+                        .monospacedDigit()
+                }
+
+                HStack(spacing: 10) {
+                    Button {
+                        if store.isSessionRunning {
+                            store.pauseSession()
+                        } else {
+                            store.startSession()
+                        }
+                    } label: {
+                        Label(store.isSessionRunning ? "Pause" : "Start", systemImage: store.isSessionRunning ? "pause.fill" : "play.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button {
+                        store.resetSession()
+                    } label: {
+                        Label("Reset", systemImage: "arrow.counterclockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(elapsed < 1 && !store.isSessionRunning)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color(.secondarySystemBackground))
+            )
+        }
+    }
+
+    private func formatted(duration: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(duration.rounded(.down)))
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+    }
+}
+
+struct SessionTimerOverlayModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                GeometryReader { geometry in
+                    SessionTimerFloatingBadge()
+                        .padding(.top, geometry.safeAreaInsets.top + 8)
+                        .padding(.leading, 12)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
+            }
+    }
+}
+
+extension View {
+    func sessionTimerOverlay() -> some View {
+        modifier(SessionTimerOverlayModifier())
+    }
+}
+
+private struct SessionTimerFloatingBadge: View {
+    @EnvironmentObject private var store: AppStore
+
+    var body: some View {
+        let hasStartedSession = store.isSessionRunning || store.currentSessionDuration() > 0
+
+        Group {
+            if hasStartedSession {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    let elapsed = store.currentSessionDuration(at: context.date)
+
+                    HStack(spacing: 8) {
+                        Image(systemName: store.isSessionRunning ? "play.fill" : "pause.fill")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(store.isSessionRunning ? .green : .secondary)
+
+                        Text(formatted(duration: elapsed))
+                            .font(.caption.weight(.semibold))
+                            .monospacedDigit()
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .shadow(color: .black.opacity(0.12), radius: 4, x: 0, y: 2)
+                    .allowsHitTesting(false)
+                }
+            }
+        }
+    }
+
+    private func formatted(duration: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(duration.rounded(.down)))
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
     }
 }

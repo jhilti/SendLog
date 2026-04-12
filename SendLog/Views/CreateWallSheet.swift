@@ -113,6 +113,7 @@ struct CreateWallSheet: View {
                 }
             }
         }
+        .sessionTimerOverlay()
     }
 
     private var canSave: Bool {

@@ -2,6 +2,9 @@ import SwiftUI
 import UIKit
 
 struct WallCanvasView: View {
+    private let holdMarkerWidthScale: CGFloat = 0.7
+    private let holdMarkerHeightScale: CGFloat = 0.56
+
     let image: UIImage
     let holds: [Hold]
     let selectedHoldIDs: Set<UUID>
@@ -67,7 +70,7 @@ struct WallCanvasView: View {
                             }
                             let selectionColor: Color = isSecondarySelected ? .red : .blue
                             let rect = rendered.rect.toCGRect(in: imageFrame)
-                            let path = Path(roundedRect: rect, cornerRadius: 4)
+                            let path = Path(rect)
                             let lineWidth: CGFloat = isSelected ? 2.0 : 1.4
 
                             if isSelected {
@@ -105,7 +108,7 @@ struct WallCanvasView: View {
                                 context.drawLayer { layerContext in
                                     layerContext.addFilter(.shadow(color: .white.opacity(0.8), radius: 4, x: 0, y: 0))
                                     layerContext.stroke(
-                                        Path(roundedRect: highlightRect, cornerRadius: 4),
+                                        Path(highlightRect),
                                         with: .color(.white.opacity(0.96)),
                                         lineWidth: 1.4
                                     )
@@ -654,19 +657,23 @@ struct WallCanvasView: View {
     private func renderedHold(for hold: Hold) -> Hold {
         if hold.id == activeHoldResizeID, let resizedHoldRect {
             var resized = hold
-            resized.rect = resizedHoldRect.squareAnchoredTopLeading()
+            resized.rect = markerRect(for: resizedHoldRect)
             resized.contour = nil
             return resized
         }
         if hold.id == activeHoldDragID, let draggedHoldCenter {
             var moved = holdMoved(hold, to: draggedHoldCenter)
-            moved.rect = moved.rect.squareCentered()
+            moved.rect = markerRect(for: moved.rect)
             return moved
         }
 
         var rendered = hold
-        rendered.rect = hold.rect.squareCentered()
+        rendered.rect = markerRect(for: hold.rect)
         return rendered
+    }
+
+    private func markerRect(for rect: NormalizedRect) -> NormalizedRect {
+        rect.scaledAroundCenter(x: holdMarkerWidthScale, y: holdMarkerHeightScale)
     }
 
     private func holdMoved(_ hold: Hold, to normalizedCenter: CGPoint) -> Hold {
@@ -706,7 +713,7 @@ struct WallCanvasView: View {
     }
 
     private func holdHighlightRect(for hold: Hold, in imageFrame: CGRect) -> CGRect {
-        let baseRect = hold.rect.squareCentered().toCGRect(in: imageFrame)
+        let baseRect = hold.rect.toCGRect(in: imageFrame)
         let padding = max(6, min(baseRect.width, baseRect.height) * 0.2)
         return baseRect.insetBy(dx: -padding, dy: -padding)
     }
@@ -839,25 +846,23 @@ struct WallCanvasView: View {
 
     private func resizedRect(for hold: Hold, draggingBottomRightTo location: CGPoint, in imageFrame: CGRect) -> NormalizedRect {
         let startRect = hold.rect.toCGRect(in: imageFrame)
-        let minPixelSide = max(18, min(imageFrame.width, imageFrame.height) * 0.03)
+        let minPixelWidth = max(18, imageFrame.width * 0.025)
+        let minPixelHeight = max(14, imageFrame.height * 0.022)
 
         let clampedPoint = CGPoint(
-            x: min(max(location.x, startRect.minX + minPixelSide), imageFrame.maxX),
-            y: min(max(location.y, startRect.minY + minPixelSide), imageFrame.maxY)
+            x: min(max(location.x, startRect.minX + minPixelWidth), imageFrame.maxX),
+            y: min(max(location.y, startRect.minY + minPixelHeight), imageFrame.maxY)
         )
 
-        let requestedWidth = clampedPoint.x - startRect.minX
-        let requestedHeight = clampedPoint.y - startRect.minY
-        let requestedSide = max(requestedWidth, requestedHeight)
-        let maxSide = min(imageFrame.maxX - startRect.minX, imageFrame.maxY - startRect.minY)
-        let side = min(max(requestedSide, minPixelSide), maxSide)
+        let requestedWidth = min(max(clampedPoint.x - startRect.minX, minPixelWidth), imageFrame.maxX - startRect.minX)
+        let requestedHeight = min(max(clampedPoint.y - startRect.minY, minPixelHeight), imageFrame.maxY - startRect.minY)
 
         return NormalizedRect(
             x: hold.rect.x,
             y: hold.rect.y,
-            width: side / imageFrame.width,
-            height: side / imageFrame.height
-        ).squareAnchoredTopLeading()
+            width: requestedWidth / imageFrame.width,
+            height: requestedHeight / imageFrame.height
+        ).clamped()
     }
 
     private func isManualMarker(_ hold: Hold) -> Bool {
@@ -908,12 +913,12 @@ struct WallCanvasView: View {
     }
 
     private func holdContains(_ hold: Hold, point: CGPoint, imageFrame: CGRect) -> Bool {
-        holdHighlightRect(for: hold, in: imageFrame).contains(point)
+        holdHighlightRect(for: renderedHold(for: hold), in: imageFrame).contains(point)
     }
 
     private func holdPath(for hold: Hold, in imageFrame: CGRect) -> Path {
         let rect = hold.rect.toCGRect(in: imageFrame)
-        return Path(roundedRect: rect, cornerRadius: 4)
+        return Path(rect)
     }
 
     private func detectedMarkerRect(for hold: Hold, in imageFrame: CGRect) -> CGRect {

@@ -2,6 +2,28 @@ import Foundation
 import CoreImage
 import UIKit
 
+struct SessionLogEntry: Identifiable, Codable, Hashable {
+    let id: UUID
+    let recordedAt: Date
+    let duration: TimeInterval
+    let attempts: Int
+    let ticks: Int
+
+    init(
+        id: UUID = UUID(),
+        recordedAt: Date,
+        duration: TimeInterval,
+        attempts: Int,
+        ticks: Int
+    ) {
+        self.id = id
+        self.recordedAt = recordedAt
+        self.duration = max(0, duration)
+        self.attempts = max(0, attempts)
+        self.ticks = max(0, ticks)
+    }
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     enum AppStoreError: LocalizedError {
@@ -31,11 +53,34 @@ final class AppStore: ObservableObject {
     }
 
     private struct BackupPayload: Codable {
-        static let currentVersion = 1
+        static let currentVersion = 2
 
         let version: Int
         let exportedAt: Date
         let walls: [BackupWall]
+        let sessionLogs: [SessionLogEntry]
+
+        private enum CodingKeys: String, CodingKey {
+            case version
+            case exportedAt
+            case walls
+            case sessionLogs
+        }
+
+        init(version: Int, exportedAt: Date, walls: [BackupWall], sessionLogs: [SessionLogEntry]) {
+            self.version = version
+            self.exportedAt = exportedAt
+            self.walls = walls
+            self.sessionLogs = sessionLogs
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            version = try container.decode(Int.self, forKey: .version)
+            exportedAt = try container.decode(Date.self, forKey: .exportedAt)
+            walls = try container.decode([BackupWall].self, forKey: .walls)
+            sessionLogs = try container.decodeIfPresent([SessionLogEntry].self, forKey: .sessionLogs) ?? []
+        }
     }
 
     private struct BackupWall: Codable {
@@ -46,22 +91,32 @@ final class AppStore: ObservableObject {
 
     @Published private(set) var walls: [Wall] = []
     @Published private(set) var hasLoaded = false
+    @Published private(set) var sessionLogs: [SessionLogEntry] = []
+    @Published private(set) var sessionStartDate: Date?
+    @Published private(set) var sessionAccumulatedDuration: TimeInterval = 0
 
     private let repository: WallRepository
     private let imageStore: ImageStore
     private let detector: any HoldDetecting
+    private let userDefaults: UserDefaults
     private let imageCache = NSCache<NSString, UIImage>()
     private let maskCache = NSCache<NSString, UIImage>()
     private let ciContext = CIContext(options: nil)
+    private let sessionLogsKey = "sessionLogs"
+    private var sessionStartedAt: Date?
+    private var sessionAttemptCount = 0
+    private var sessionTickCount = 0
 
     init(
         repository: WallRepository = WallRepository(),
         imageStore: ImageStore = ImageStore(),
-        detector: any HoldDetecting = HoldDetectionService()
+        detector: any HoldDetecting = HoldDetectionService(),
+        userDefaults: UserDefaults = .standard
     ) {
         self.repository = repository
         self.imageStore = imageStore
         self.detector = detector
+        self.userDefaults = userDefaults
 
         Task {
             await load()
@@ -72,15 +127,53 @@ final class AppStore: ObservableObject {
         do {
             let loadedWalls = try await repository.loadWalls()
             walls = loadedWalls.sorted { $0.updatedAt > $1.updatedAt }
+            sessionLogs = loadSessionLogs()
             hasLoaded = true
         } catch {
             walls = []
+            sessionLogs = loadSessionLogs()
             hasLoaded = true
         }
     }
 
     func wall(withID id: UUID) -> Wall? {
         walls.first { $0.id == id }
+    }
+
+    var isSessionRunning: Bool {
+        sessionStartDate != nil
+    }
+
+    func currentSessionDuration(at referenceDate: Date = Date()) -> TimeInterval {
+        sessionAccumulatedDuration + (sessionStartDate.map { referenceDate.timeIntervalSince($0) } ?? 0)
+    }
+
+    func startSession() {
+        guard sessionStartDate == nil else {
+            return
+        }
+        let now = Date()
+        if sessionStartedAt == nil {
+            sessionStartedAt = now
+        }
+        sessionStartDate = now
+    }
+
+    func pauseSession() {
+        guard let sessionStartDate else {
+            return
+        }
+        sessionAccumulatedDuration += Date().timeIntervalSince(sessionStartDate)
+        self.sessionStartDate = nil
+    }
+
+    func resetSession() {
+        finalizeSessionIfNeeded()
+        sessionStartDate = nil
+        sessionAccumulatedDuration = 0
+        sessionStartedAt = nil
+        sessionAttemptCount = 0
+        sessionTickCount = 0
     }
 
     func image(for wall: Wall) -> UIImage? {
@@ -195,9 +288,7 @@ final class AppStore: ObservableObject {
         }
 
         let detected = try await detector.detectHolds(in: detectionImage).map { hold in
-            var squared = hold
-            squared.rect = hold.rect.squareCentered()
-            return squared
+            hold
         }
         walls[index].holds = detected
         walls[index].updatedAt = Date()
@@ -301,7 +392,7 @@ final class AppStore: ObservableObject {
 
         walls[wallIndex].holds[holdIndex] = resizedHold(
             walls[wallIndex].holds[holdIndex],
-            to: normalizedRect.squareAnchoredTopLeading()
+            to: normalizedRect.clamped()
         )
         walls[wallIndex].updatedAt = Date()
         try await persist()
@@ -414,7 +505,25 @@ final class AppStore: ObservableObject {
             throw AppStoreError.boulderNotFound
         }
 
+        walls[wallIdx].boulders[boulderIdx].attemptCount += 1
         walls[wallIdx].boulders[boulderIdx].tickCount += 1
+        appendLogEntry(attempts: 1, ticks: 1, toBoulderAt: boulderIdx, onWallAt: wallIdx)
+        adjustSessionActivity(attempts: 1, ticks: 1)
+        walls[wallIdx].updatedAt = Date()
+        try await persist()
+    }
+
+    func incrementBoulderAttempt(wallID: UUID, boulderID: UUID) async throws {
+        guard let wallIdx = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+        guard let boulderIdx = walls[wallIdx].boulders.firstIndex(where: { $0.id == boulderID }) else {
+            throw AppStoreError.boulderNotFound
+        }
+
+        walls[wallIdx].boulders[boulderIdx].attemptCount += 1
+        appendLogEntry(attempts: 1, ticks: 0, toBoulderAt: boulderIdx, onWallAt: wallIdx)
+        adjustSessionActivity(attempts: 1, ticks: 0)
         walls[wallIdx].updatedAt = Date()
         try await persist()
     }
@@ -430,7 +539,58 @@ final class AppStore: ObservableObject {
         guard walls[wallIdx].boulders[boulderIdx].tickCount > 0 else {
             return
         }
-        walls[wallIdx].boulders[boulderIdx].tickCount -= 1
+
+        if let removedEntry = removeLastLogEntry(
+            matching: { $0.ticks > 0 },
+            fromBoulderAt: boulderIdx,
+            onWallAt: wallIdx
+        ) {
+            walls[wallIdx].boulders[boulderIdx].tickCount = max(
+                0,
+                walls[wallIdx].boulders[boulderIdx].tickCount - removedEntry.ticks
+            )
+            walls[wallIdx].boulders[boulderIdx].attemptCount = max(
+                0,
+                walls[wallIdx].boulders[boulderIdx].attemptCount - removedEntry.attempts
+            )
+            adjustSessionActivity(attempts: -removedEntry.attempts, ticks: -removedEntry.ticks)
+        } else {
+            walls[wallIdx].boulders[boulderIdx].tickCount -= 1
+            walls[wallIdx].boulders[boulderIdx].attemptCount = max(
+                0,
+                walls[wallIdx].boulders[boulderIdx].attemptCount - 1
+            )
+            adjustSessionActivity(attempts: -1, ticks: -1)
+        }
+        walls[wallIdx].updatedAt = Date()
+        try await persist()
+    }
+
+    func decrementBoulderAttempt(wallID: UUID, boulderID: UUID) async throws {
+        guard let wallIdx = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+        guard let boulderIdx = walls[wallIdx].boulders.firstIndex(where: { $0.id == boulderID }) else {
+            throw AppStoreError.boulderNotFound
+        }
+
+        guard walls[wallIdx].boulders[boulderIdx].attemptCount > 0 else {
+            return
+        }
+
+        if let removedEntry = removeLastLogEntry(
+            matching: { $0.attempts > 0 && $0.ticks == 0 },
+            fromBoulderAt: boulderIdx,
+            onWallAt: wallIdx
+        ) {
+            walls[wallIdx].boulders[boulderIdx].attemptCount = max(
+                0,
+                walls[wallIdx].boulders[boulderIdx].attemptCount - removedEntry.attempts
+            )
+            adjustSessionActivity(attempts: -removedEntry.attempts, ticks: 0)
+        } else {
+            return
+        }
         walls[wallIdx].updatedAt = Date()
         try await persist()
     }
@@ -458,7 +618,8 @@ final class AppStore: ObservableObject {
         let payload = BackupPayload(
             version: BackupPayload.currentVersion,
             exportedAt: Date(),
-            walls: backupWalls
+            walls: backupWalls,
+            sessionLogs: sessionLogs
         )
 
         let encoder = JSONEncoder()
@@ -477,7 +638,7 @@ final class AppStore: ObservableObject {
             throw AppStoreError.invalidBackupData
         }
 
-        guard payload.version == BackupPayload.currentVersion else {
+        guard (1...BackupPayload.currentVersion).contains(payload.version) else {
             throw AppStoreError.unsupportedBackupVersion
         }
 
@@ -507,6 +668,13 @@ final class AppStore: ObservableObject {
         imageCache.removeAllObjects()
         maskCache.removeAllObjects()
         walls = importedWalls.sorted { $0.updatedAt > $1.updatedAt }
+        sessionLogs = payload.sessionLogs
+        saveSessionLogs()
+        sessionStartDate = nil
+        sessionAccumulatedDuration = 0
+        sessionStartedAt = nil
+        sessionAttemptCount = 0
+        sessionTickCount = 0
         try await persist()
     }
 
@@ -573,7 +741,12 @@ final class AppStore: ObservableObject {
     }
 
     private func manualBoxHold(at normalizedPoint: CGPoint) -> Hold {
-        let rect = NormalizedRect.square(centeredAt: normalizedPoint, side: 0.08)
+        let rect = NormalizedRect(
+            x: normalizedPoint.x - 0.04,
+            y: normalizedPoint.y - 0.03,
+            width: 0.08,
+            height: 0.06
+        ).clamped()
 
         return Hold(
             rect: rect,
@@ -682,5 +855,75 @@ final class AppStore: ObservableObject {
     private func persist() async throws {
         walls.sort { $0.updatedAt > $1.updatedAt }
         try await repository.saveWalls(walls)
+    }
+
+    private func adjustSessionActivity(attempts: Int, ticks: Int) {
+        guard sessionStartedAt != nil else {
+            return
+        }
+
+        sessionAttemptCount = max(0, sessionAttemptCount + attempts)
+        sessionTickCount = max(0, sessionTickCount + ticks)
+    }
+
+    private func finalizeSessionIfNeeded() {
+        guard let sessionStartedAt else {
+            return
+        }
+
+        let duration = currentSessionDuration()
+        guard duration >= 1 || sessionAttemptCount > 0 || sessionTickCount > 0 else {
+            return
+        }
+
+        sessionLogs.insert(
+            SessionLogEntry(
+                recordedAt: sessionStartedAt,
+                duration: duration,
+                attempts: sessionAttemptCount,
+                ticks: sessionTickCount
+            ),
+            at: 0
+        )
+        saveSessionLogs()
+    }
+
+    private func loadSessionLogs() -> [SessionLogEntry] {
+        guard let data = userDefaults.data(forKey: sessionLogsKey) else {
+            return []
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return (try? decoder.decode([SessionLogEntry].self, from: data)) ?? []
+    }
+
+    private func saveSessionLogs() {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+
+        guard let data = try? encoder.encode(sessionLogs) else {
+            return
+        }
+
+        userDefaults.set(data, forKey: sessionLogsKey)
+    }
+
+    private func appendLogEntry(attempts: Int, ticks: Int, toBoulderAt boulderIndex: Int, onWallAt wallIndex: Int) {
+        walls[wallIndex].boulders[boulderIndex].logEntries.append(
+            BoulderLogEntry(attempts: attempts, ticks: ticks)
+        )
+    }
+
+    private func removeLastLogEntry(
+        matching predicate: (BoulderLogEntry) -> Bool,
+        fromBoulderAt boulderIndex: Int,
+        onWallAt wallIndex: Int
+    ) -> BoulderLogEntry? {
+        guard let logIndex = walls[wallIndex].boulders[boulderIndex].logEntries.lastIndex(where: predicate) else {
+            return nil
+        }
+
+        return walls[wallIndex].boulders[boulderIndex].logEntries.remove(at: logIndex)
     }
 }

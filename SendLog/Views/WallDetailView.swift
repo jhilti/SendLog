@@ -30,6 +30,7 @@ struct WallDetailView: View {
                                 image: image,
                                 holds: wall.holds,
                                 selectedHoldIDs: [],
+                                showsInactiveHolds: isEditingHolds,
                                 editableHoldID: selectedEditableHoldID,
                                 onHoldTap: isEditingHolds ? { hold in
                                     handleEditableHoldTap(hold)
@@ -398,7 +399,7 @@ private struct BoulderRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(boulder.name)
                     .font(.headline)
-                Text("\(boulder.grade) • \(boulder.holdIDs.count) holds • \(boulder.tickCount) ticks")
+                Text("\(boulder.grade) • \(boulder.holdIDs.count) holds • \(boulder.attemptCount) attempts • \(boulder.tickCount) ticks")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 if !boulder.notes.isEmpty {
@@ -431,7 +432,7 @@ private struct BoulderRow: View {
     }
 }
 
-private struct BoulderPreviewSheet: View {
+struct BoulderPreviewSheet: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
 
@@ -439,7 +440,7 @@ private struct BoulderPreviewSheet: View {
     let image: UIImage
     @State private var currentBoulderID: UUID
     @State private var wallCanvasZoomScale: CGFloat = 1
-    @State private var isUpdatingTick = false
+    @State private var isUpdatingLog = false
     @State private var errorMessage: String?
 
     init(wallID: UUID, image: UIImage, initialBoulderID: UUID) {
@@ -469,7 +470,7 @@ private struct BoulderPreviewSheet: View {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(boulder.name)
                                     .font(.title3.weight(.semibold))
-                                Text("\(boulder.grade) • \(boulder.holdIDs.count) holds • \(boulder.tickCount) ticks")
+                                Text("\(boulder.grade) • \(boulder.holdIDs.count) holds • \(boulder.attemptCount) attempts • \(boulder.tickCount) ticks")
                                     .font(.subheadline)
                                     .foregroundStyle(.secondary)
                                 Text("Swipe left or right to switch problems.")
@@ -477,20 +478,38 @@ private struct BoulderPreviewSheet: View {
                                     .foregroundStyle(.secondary)
                                 HStack(spacing: 10) {
                                     Button {
-                                        updateTick(increment: true)
+                                        updateLog(.attempt)
+                                    } label: {
+                                        Label("Attempt", systemImage: "plus.circle")
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(isUpdatingLog)
+
+                                    Button {
+                                        updateLog(.tick)
                                     } label: {
                                         Label("Tick", systemImage: "checkmark.circle.fill")
                                     }
                                     .buttonStyle(.borderedProminent)
-                                    .disabled(isUpdatingTick)
+                                    .disabled(isUpdatingLog)
+                                }
+
+                                HStack(spacing: 10) {
+                                    Button {
+                                        updateLog(.undoAttempt)
+                                    } label: {
+                                        Label("Undo Attempt", systemImage: "arrow.uturn.backward")
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(isUpdatingLog || !hasUndoableAttemptOnlyLog)
 
                                     Button {
-                                        updateTick(increment: false)
+                                        updateLog(.undoTick)
                                     } label: {
                                         Label("Undo Tick", systemImage: "arrow.uturn.backward.circle")
                                     }
                                     .buttonStyle(.bordered)
-                                    .disabled(isUpdatingTick || boulder.tickCount == 0)
+                                    .disabled(isUpdatingLog || boulder.tickCount == 0)
                                 }
                                 if !boulder.notes.isEmpty {
                                     Text(boulder.notes)
@@ -525,6 +544,7 @@ private struct BoulderPreviewSheet: View {
                 }
             }
         }
+        .sessionTimerOverlay()
     }
 
     private var currentWall: Wall? {
@@ -537,6 +557,10 @@ private struct BoulderPreviewSheet: View {
 
     private var currentBoulder: Boulder? {
         orderedBoulders.first { $0.id == currentBoulderID }
+    }
+
+    private var hasUndoableAttemptOnlyLog: Bool {
+        currentBoulder?.logEntries.contains(where: { $0.attempts > 0 && $0.ticks == 0 }) ?? false
     }
 
     private var currentBoulderIndex: Int? {
@@ -568,25 +592,37 @@ private struct BoulderPreviewSheet: View {
             }
     }
 
-    private func updateTick(increment: Bool) {
+    private enum BoulderLogAction {
+        case attempt
+        case tick
+        case undoAttempt
+        case undoTick
+    }
+
+    private func updateLog(_ action: BoulderLogAction) {
         guard let boulder = currentBoulder else {
             return
         }
 
-        isUpdatingTick = true
+        isUpdatingLog = true
         errorMessage = nil
 
         Task {
             do {
-                if increment {
+                switch action {
+                case .attempt:
+                    try await store.incrementBoulderAttempt(wallID: boulder.wallID, boulderID: boulder.id)
+                case .tick:
                     try await store.incrementBoulderTick(wallID: boulder.wallID, boulderID: boulder.id)
-                } else {
+                case .undoAttempt:
+                    try await store.decrementBoulderAttempt(wallID: boulder.wallID, boulderID: boulder.id)
+                case .undoTick:
                     try await store.decrementBoulderTick(wallID: boulder.wallID, boulderID: boulder.id)
                 }
             } catch {
                 errorMessage = error.localizedDescription
             }
-            isUpdatingTick = false
+            isUpdatingLog = false
         }
     }
 

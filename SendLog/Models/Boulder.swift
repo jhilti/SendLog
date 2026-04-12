@@ -1,5 +1,24 @@
 import Foundation
 
+struct BoulderLogEntry: Identifiable, Codable, Hashable {
+    let id: UUID
+    let recordedAt: Date
+    let attempts: Int
+    let ticks: Int
+
+    init(
+        id: UUID = UUID(),
+        recordedAt: Date = Date(),
+        attempts: Int,
+        ticks: Int
+    ) {
+        self.id = id
+        self.recordedAt = recordedAt
+        self.attempts = max(0, attempts)
+        self.ticks = max(0, ticks)
+    }
+}
+
 struct Boulder: Identifiable, Codable, Hashable {
     let id: UUID
     let wallID: UUID
@@ -7,7 +26,9 @@ struct Boulder: Identifiable, Codable, Hashable {
     var grade: String
     var notes: String
     var holdIDs: [UUID]
+    var attemptCount: Int
     var tickCount: Int
+    var logEntries: [BoulderLogEntry]
     let createdAt: Date
 
     private enum CodingKeys: String, CodingKey {
@@ -17,7 +38,9 @@ struct Boulder: Identifiable, Codable, Hashable {
         case grade
         case notes
         case holdIDs
+        case attemptCount
         case tickCount
+        case logEntries
         case createdAt
     }
 
@@ -28,7 +51,9 @@ struct Boulder: Identifiable, Codable, Hashable {
         grade: String,
         notes: String,
         holdIDs: [UUID],
+        attemptCount: Int = 0,
         tickCount: Int = 0,
+        logEntries: [BoulderLogEntry] = [],
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -37,7 +62,9 @@ struct Boulder: Identifiable, Codable, Hashable {
         self.grade = grade
         self.notes = notes
         self.holdIDs = holdIDs
+        self.attemptCount = max(0, attemptCount)
         self.tickCount = max(0, tickCount)
+        self.logEntries = logEntries
         self.createdAt = createdAt
     }
 
@@ -49,7 +76,9 @@ struct Boulder: Identifiable, Codable, Hashable {
         grade = try container.decode(String.self, forKey: .grade)
         notes = try container.decode(String.self, forKey: .notes)
         holdIDs = try container.decode([UUID].self, forKey: .holdIDs)
+        attemptCount = max(0, try container.decodeIfPresent(Int.self, forKey: .attemptCount) ?? 0)
         tickCount = max(0, try container.decodeIfPresent(Int.self, forKey: .tickCount) ?? 0)
+        logEntries = try container.decodeIfPresent([BoulderLogEntry].self, forKey: .logEntries) ?? []
         createdAt = try container.decode(Date.self, forKey: .createdAt)
     }
 
@@ -61,7 +90,9 @@ struct Boulder: Identifiable, Codable, Hashable {
         try container.encode(grade, forKey: .grade)
         try container.encode(notes, forKey: .notes)
         try container.encode(holdIDs, forKey: .holdIDs)
+        try container.encode(attemptCount, forKey: .attemptCount)
         try container.encode(tickCount, forKey: .tickCount)
+        try container.encode(logEntries, forKey: .logEntries)
         try container.encode(createdAt, forKey: .createdAt)
     }
 }
