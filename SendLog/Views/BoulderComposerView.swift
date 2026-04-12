@@ -45,6 +45,7 @@ struct BoulderComposerView: View {
                                 holds: wall.holds,
                                 selectedHoldIDs: primarySelectedHoldIDs,
                                 secondarySelectedHoldIDs: secondarySelectedHoldIDs,
+                                showsInactiveHolds: false,
                                 onHoldTap: { hold in
                                     cycleSelection(for: hold.id)
                                 },
