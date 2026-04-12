@@ -10,9 +10,6 @@ struct WallDetailView: View {
     @State private var isCreatingBoulder = false
     @State private var isDetectingHolds = false
     @State private var isEditingHolds = false
-    @State private var isAddModeEnabled = false
-    @State private var isContourDrawModeEnabled = false
-    @State private var contourUndoRequestID = 0
     @State private var selectedEditableHoldID: UUID?
     @State private var isShowingDeleteAllHoldsConfirmation = false
     @State private var previewBoulder: Boulder?
@@ -34,33 +31,27 @@ struct WallDetailView: View {
                                 holds: wall.holds,
                                 selectedHoldIDs: [],
                                 editableHoldID: selectedEditableHoldID,
-                                onHoldTap: (isEditingHolds && isAddModeEnabled && !isContourDrawModeEnabled) ? { hold in
+                                onHoldTap: isEditingHolds ? { hold in
                                     handleEditableHoldTap(hold)
-                                } : (isEditingHolds && !isAddModeEnabled) ? { hold in
+                                } : nil,
+                                onHoldDelete: isEditingHolds ? { hold in
                                     handleHoldTap(hold)
                                 } : nil,
-                                onHoldDoubleTap: (isEditingHolds && isAddModeEnabled && !isContourDrawModeEnabled) ? { hold in
-                                    handleEditableHoldDoubleTap(hold)
-                                } : nil,
-                                onEmptyImageTap: (isEditingHolds && isAddModeEnabled && !isContourDrawModeEnabled) ? { _ in
+                                onEmptyImageTap: isEditingHolds ? { _ in
                                     handleEditableEmptyTap()
                                 } : nil,
-                                onEmptyImageDoubleTap: (isEditingHolds && isAddModeEnabled && !isContourDrawModeEnabled) ? { point in
+                                onEmptyImageDoubleTap: isEditingHolds ? { point in
                                     handleEditableImageDoubleTap(point)
                                 } : nil,
-                                onHoldDragEnd: (isEditingHolds && isAddModeEnabled && !isContourDrawModeEnabled) ? { hold, point in
+                                onHoldDragEnd: isEditingHolds ? { hold, point in
                                     handleEditableHoldMove(hold: hold, to: point)
                                 } : nil,
-                                onContourComplete: (isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled) ? { points in
-                                    handleContourDraw(points)
+                                onHoldResizeEnd: isEditingHolds ? { hold, rect in
+                                    handleEditableHoldResize(hold: hold, to: rect)
                                 } : nil,
-                                onContourUndo: (isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled) ? {
-                                    handleContourUndo()
-                                } : nil,
-                                contourUndoRequestID: contourUndoRequestID,
                                 isZoomEnabled: true,
-                                isContourDrawEnabled: isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled,
-                                nearestSelectionEnabled: !isAddModeEnabled && !isContourDrawModeEnabled,
+                                isContourDrawEnabled: false,
+                                nearestSelectionEnabled: !isEditingHolds,
                                 showInlineContourUndoButton: false,
                                 cornerRadius: 0
                             )
@@ -105,22 +96,6 @@ struct WallDetailView: View {
                     .contentMargins(.top, 0, for: .scrollContent)
                     .contentMargins(.top, 0, for: .scrollIndicators)
                     .ignoresSafeArea(edges: .top)
-                    .overlay(alignment: .bottomTrailing) {
-                        if isEditingHolds && isAddModeEnabled && isContourDrawModeEnabled {
-                            Button {
-                                contourUndoRequestID += 1
-                            } label: {
-                                Label("Undo", systemImage: "arrow.uturn.backward")
-                                    .font(.headline.weight(.semibold))
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 12)
-                                    .background(.ultraThinMaterial, in: Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 14)
-                        }
-                    }
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
                             Button {
@@ -163,7 +138,7 @@ struct WallDetailView: View {
                         }
                         Button("Cancel", role: .cancel) {}
                     } message: {
-                        Text("This removes every detected and manual hold marker.")
+                        Text("This removes every detected and manual hold box.")
                     }
                     .alert("Error", isPresented: Binding(
                         get: { errorMessage != nil },
@@ -208,8 +183,6 @@ struct WallDetailView: View {
                     withAnimation {
                         isEditingHolds.toggle()
                         if !isEditingHolds {
-                            isAddModeEnabled = false
-                            isContourDrawModeEnabled = false
                             selectedEditableHoldID = nil
                         }
                     }
@@ -241,51 +214,15 @@ struct WallDetailView: View {
             Text(
                 wall.maskFilename == nil
                     ? "Optional: import a black/white wall mask to restrict hold detection to the wall area."
-                    : "Wall mask enabled. Auto-detect and tap-to-segment now run only inside the masked area."
+                    : "Wall mask enabled. Auto-detect now runs only inside the masked area."
             )
             .font(.footnote)
             .foregroundStyle(.secondary)
 
             if isEditingHolds {
-                Toggle(
-                    "Add Hold Mode",
-                    isOn: Binding(
-                        get: { isAddModeEnabled },
-                        set: { enabled in
-                            isAddModeEnabled = enabled
-                            if !enabled {
-                                isContourDrawModeEnabled = false
-                                selectedEditableHoldID = nil
-                            }
-                        }
-                    )
-                )
-
-                if isAddModeEnabled {
-                    Toggle(
-                        "Draw Contour",
-                        isOn: Binding(
-                            get: { isContourDrawModeEnabled },
-                            set: { enabled in
-                                isContourDrawModeEnabled = enabled
-                                if enabled {
-                                    selectedEditableHoldID = nil
-                                }
-                            }
-                        )
-                    )
-                    Text(
-                        isContourDrawModeEnabled
-                            ? "Draw around a hold with one finger. Double-tap to toggle Move mode, then drag to pan. Pinch to zoom. Release to save."
-                            : "Double-tap to add/remove glowing markers. Tap a marker to select, tap empty space to deselect, then drag to move."
-                    )
+                Text("Tap a hold to select it. Double-tap empty space to add a box. Use the corner controls to delete, move, or resize.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                } else {
-                    Text("Tap a hold to remove it.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
 
                 if !wall.holds.isEmpty {
                     Button(role: .destructive) {
@@ -333,38 +270,21 @@ struct WallDetailView: View {
     }
 
     private func handleEditableHoldTap(_ hold: Hold) {
-        guard isEditingHolds, isAddModeEnabled, !isContourDrawModeEnabled else {
+        guard isEditingHolds else {
             return
         }
         selectedEditableHoldID = hold.id
     }
 
     private func handleEditableEmptyTap() {
-        guard isEditingHolds, isAddModeEnabled, !isContourDrawModeEnabled else {
+        guard isEditingHolds else {
             return
         }
         selectedEditableHoldID = nil
     }
 
-    private func handleEditableHoldDoubleTap(_ hold: Hold) {
-        guard isEditingHolds, isAddModeEnabled, !isContourDrawModeEnabled else {
-            return
-        }
-
-        Task {
-            do {
-                try await store.removeHold(wallID: wallID, holdID: hold.id)
-                if selectedEditableHoldID == hold.id {
-                    selectedEditableHoldID = nil
-                }
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
-    }
-
     private func handleEditableImageDoubleTap(_ point: CGPoint) {
-        guard isEditingHolds, isAddModeEnabled, !isContourDrawModeEnabled else {
+        guard isEditingHolds else {
             return
         }
 
@@ -379,7 +299,7 @@ struct WallDetailView: View {
     }
 
     private func handleEditableHoldMove(hold: Hold, to point: CGPoint) {
-        guard isEditingHolds, isAddModeEnabled, !isContourDrawModeEnabled else {
+        guard isEditingHolds else {
             return
         }
 
@@ -392,28 +312,14 @@ struct WallDetailView: View {
         }
     }
 
-    private func handleContourDraw(_ points: [CGPoint]) {
-        guard isEditingHolds, isAddModeEnabled, isContourDrawModeEnabled else {
+    private func handleEditableHoldResize(hold: Hold, to rect: NormalizedRect) {
+        guard isEditingHolds else {
             return
         }
 
         Task {
             do {
-                try await store.addManualHoldContour(wallID: wallID, points: points)
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
-    }
-
-    private func handleContourUndo() {
-        guard isEditingHolds, isAddModeEnabled, isContourDrawModeEnabled else {
-            return
-        }
-
-        Task {
-            do {
-                try await store.removeLastManualHold(wallID: wallID)
+                try await store.resizeHold(wallID: wallID, holdID: hold.id, to: rect)
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -424,8 +330,6 @@ struct WallDetailView: View {
         Task {
             do {
                 try await store.removeAllHolds(wallID: wallID)
-                isContourDrawModeEnabled = false
-                isAddModeEnabled = false
                 selectedEditableHoldID = nil
             } catch {
                 errorMessage = error.localizedDescription
@@ -534,6 +438,7 @@ private struct BoulderPreviewSheet: View {
     let wallID: UUID
     let image: UIImage
     @State private var currentBoulderID: UUID
+    @State private var wallCanvasZoomScale: CGFloat = 1
     @State private var isUpdatingTick = false
     @State private var errorMessage: String?
 
@@ -553,8 +458,12 @@ private struct BoulderPreviewSheet: View {
                                 image: image,
                                 holds: wall.holds,
                                 selectedHoldIDs: Set(boulder.holdIDs),
+                                showsInactiveHolds: false,
                                 onHoldTap: nil,
-                                onEmptyImageTap: nil
+                                onEmptyImageTap: nil,
+                                onZoomScaleChange: { scale in
+                                    wallCanvasZoomScale = scale
+                                }
                             )
 
                             VStack(alignment: .leading, spacing: 6) {
@@ -639,7 +548,15 @@ private struct BoulderPreviewSheet: View {
             .onEnded { value in
                 let horizontal = value.translation.width
                 let vertical = value.translation.height
-                guard abs(horizontal) > abs(vertical), abs(horizontal) > 70 else {
+                let isZoomed = wallCanvasZoomScale > 1.01
+                let directionRatio: CGFloat = isZoomed ? 2.4 : 1.35
+                let distanceThreshold: CGFloat = isZoomed ? 180 : 90
+                let predictedHorizontal = value.predictedEndTranslation.width
+                let predictedThreshold: CGFloat = isZoomed ? 240 : 120
+
+                guard abs(horizontal) > abs(vertical) * directionRatio,
+                      abs(horizontal) > distanceThreshold,
+                      abs(predictedHorizontal) > predictedThreshold else {
                     return
                 }
 
