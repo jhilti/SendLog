@@ -239,17 +239,17 @@ struct WallLibraryView: View {
                 .listStyle(.plain)
             }
         } else {
-            if allLogGroups.isEmpty {
+            if allLogDateGroups.isEmpty {
                 ContentUnavailableView(
                     "No Log Entries Yet",
                     systemImage: "list.bullet.rectangle",
                     description: Text("Log attempts or ticks on a problem to build your activity history.")
                 )
-            } else if filteredLogGroups.isEmpty {
+            } else if filteredLogDateGroups.isEmpty {
                 ContentUnavailableView.search(text: searchText)
             } else {
-                List(filteredLogGroups) { group in
-                    SessionLogGroupRow(
+                List(filteredLogDateGroups) { group in
+                    LogDateGroupRow(
                         group: group,
                         isExpanded: expansionBinding(for: group.id)
                     ) { target in
@@ -372,10 +372,12 @@ struct WallLibraryView: View {
             .sorted { $0.logEntry.recordedAt < $1.logEntry.recordedAt }
     }
 
-    private var allLogGroups: [SessionLogGroup] {
+    private var sessionMatchedActivityIDs: [UUID: Set<UUID>] {
         let sessions = store.sessionLogs.sorted { $0.recordedAt < $1.recordedAt }
         var assignedEntryIDs: Set<UUID> = []
-        var groups = sessions.enumerated().map { index, session in
+        var matches: [UUID: Set<UUID>] = [:]
+
+        for (index, session) in sessions.enumerated() {
             let nextSessionStart = sessions.indices.contains(index + 1)
                 ? sessions[index + 1].recordedAt
                 : Date.distantFuture
@@ -385,67 +387,88 @@ struct WallLibraryView: View {
                     && entry.logEntry.recordedAt < nextSessionStart
             }
             let detailEntries = reconstructedEntries(for: session, from: candidateEntries)
-            assignedEntryIDs.formUnion(detailEntries.map(\.id))
-
-            return SessionLogGroup(
-                id: session.id.uuidString,
-                title: "Session",
-                recordedAt: session.recordedAt,
-                duration: session.duration,
-                attempts: session.attempts,
-                ticks: session.ticks,
-                detailEntries: detailEntries.sorted { $0.logEntry.recordedAt > $1.logEntry.recordedAt },
-                isSession: true
-            )
+            let matchedIDs = Set(detailEntries.map(\.id))
+            assignedEntryIDs.formUnion(matchedIDs)
+            matches[session.id] = matchedIDs
         }
 
-        let ungroupedEntries = allBoulderLogEntries
-            .filter { !assignedEntryIDs.contains($0.id) }
-            .sorted { $0.logEntry.recordedAt > $1.logEntry.recordedAt }
-
-        if let latestUngroupedEntry = ungroupedEntries.first {
-            groups.append(
-                SessionLogGroup(
-                    id: "ungrouped-activity",
-                    title: "Other Activity",
-                    recordedAt: latestUngroupedEntry.logEntry.recordedAt,
-                    duration: nil,
-                    attempts: ungroupedEntries.reduce(0) { $0 + $1.logEntry.attempts },
-                    ticks: ungroupedEntries.reduce(0) { $0 + $1.logEntry.ticks },
-                    detailEntries: ungroupedEntries,
-                    isSession: false
-                )
-            )
-        }
-
-        return groups.sorted { $0.recordedAt > $1.recordedAt }
+        return matches
     }
 
-    private var filteredLogGroups: [SessionLogGroup] {
-        let query = trimmedQuery
-        guard !query.isEmpty else {
-            return allLogGroups
+    private var allLogDateGroups: [LogDateGroup] {
+        let calendar = Calendar.current
+        var groupedItems: [Date: [LogDayItem]] = [:]
+
+        for session in store.sessionLogs {
+            let day = calendar.startOfDay(for: session.recordedAt)
+            groupedItems[day, default: []].append(.session(session))
         }
 
-        return allLogGroups.filter { group in
-            let timestamp = Self.logSearchDateFormatter.string(from: group.recordedAt)
-            let durationText = group.duration.map(formattedSessionDuration) ?? ""
+        for entry in allBoulderLogEntries {
+            let day = calendar.startOfDay(for: entry.logEntry.recordedAt)
+            groupedItems[day, default: []].append(.activity(entry))
+        }
+
+        return groupedItems.map { day, items in
+            let sessions = items.compactMap(\.sessionEntry)
+            let activities = items.compactMap(\.activityEntry)
+            let matchedIDs = sessions.reduce(into: Set<UUID>()) { result, session in
+                result.formUnion(sessionMatchedActivityIDs[session.id] ?? [])
+            }
+            let extraActivityTicks = activities
+                .filter { !matchedIDs.contains($0.id) }
+                .reduce(0) { $0 + $1.logEntry.ticks }
+
+            return LogDateGroup(
+                id: Self.logGroupDateIDFormatter.string(from: day),
+                date: day,
+                sessionDuration: sessions.reduce(0) { $0 + $1.duration },
+                totalTicks: sessions.reduce(0) { $0 + $1.ticks } + extraActivityTicks,
+                items: items.sorted { lhs, rhs in
+                    if lhs.recordedAt != rhs.recordedAt {
+                        return lhs.recordedAt > rhs.recordedAt
+                    }
+                    if lhs.isSession != rhs.isSession {
+                        return lhs.isSession
+                    }
+                    return lhs.id < rhs.id
+                }
+            )
+        }
+        .sorted { $0.date > $1.date }
+    }
+
+    private var filteredLogDateGroups: [LogDateGroup] {
+        let query = trimmedQuery
+        guard !query.isEmpty else {
+            return allLogDateGroups
+        }
+
+        return allLogDateGroups.filter { group in
+            let timestamp = Self.logDateFormatter.string(from: group.date)
             let summaryMatches =
-                group.title.localizedCaseInsensitiveContains(query)
-                || timestamp.localizedCaseInsensitiveContains(query)
-                || durationText.localizedCaseInsensitiveContains(query)
+                timestamp.localizedCaseInsensitiveContains(query)
                 || group.summaryText.localizedCaseInsensitiveContains(query)
 
             guard !summaryMatches else {
                 return true
             }
 
-            return group.detailEntries.contains { entry in
-                let entryTimestamp = Self.logSearchDateFormatter.string(from: entry.logEntry.recordedAt)
-                return entry.boulder.name.localizedCaseInsensitiveContains(query)
-                    || entry.boulder.grade.localizedCaseInsensitiveContains(query)
-                    || entry.wallName.localizedCaseInsensitiveContains(query)
-                    || entryTimestamp.localizedCaseInsensitiveContains(query)
+            return group.items.contains { item in
+                let itemTimestamp = Self.logSearchDateFormatter.string(from: item.recordedAt)
+
+                switch item {
+                case .session(let session):
+                    return "session".localizedCaseInsensitiveContains(query)
+                        || formattedSessionDuration(session.duration).localizedCaseInsensitiveContains(query)
+                        || "ticks: \(session.ticks)".localizedCaseInsensitiveContains(query)
+                        || itemTimestamp.localizedCaseInsensitiveContains(query)
+                case .activity(let entry):
+                    return entry.boulder.name.localizedCaseInsensitiveContains(query)
+                        || entry.boulder.grade.localizedCaseInsensitiveContains(query)
+                        || entry.wallName.localizedCaseInsensitiveContains(query)
+                        || itemTimestamp.localizedCaseInsensitiveContains(query)
+                }
             }
         }
     }
@@ -508,6 +531,22 @@ struct WallLibraryView: View {
         return formatter
     }()
 
+    private static let logDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .full
+        formatter.timeStyle = .none
+        return formatter
+    }()
+
+    private static let logGroupDateIDFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
     private func prepareBackupExport() {
         do {
             let data = try store.exportBackupData()
@@ -566,7 +605,7 @@ private enum LibraryTab: String, CaseIterable, Identifiable {
         case .problems:
             return "Search problems or wall"
         case .logs:
-            return "Search sessions, problems, or wall"
+            return "Search dates, sessions, problems, or wall"
         }
     }
 }
@@ -596,18 +635,67 @@ private struct BoulderLogLibraryEntry: Identifiable {
     var id: UUID { logEntry.id }
 }
 
-private struct SessionLogGroup: Identifiable {
+private enum LogDayItem: Identifiable {
+    case session(SessionLogEntry)
+    case activity(BoulderLogLibraryEntry)
+
+    var id: String {
+        switch self {
+        case .session(let session):
+            return "session-\(session.id.uuidString)"
+        case .activity(let entry):
+            return "activity-\(entry.id.uuidString)"
+        }
+    }
+
+    var recordedAt: Date {
+        switch self {
+        case .session(let session):
+            return session.recordedAt
+        case .activity(let entry):
+            return entry.logEntry.recordedAt
+        }
+    }
+
+    var isSession: Bool {
+        if case .session = self {
+            return true
+        }
+        return false
+    }
+
+    var sessionEntry: SessionLogEntry? {
+        if case .session(let session) = self {
+            return session
+        }
+        return nil
+    }
+
+    var activityEntry: BoulderLogLibraryEntry? {
+        if case .activity(let entry) = self {
+            return entry
+        }
+        return nil
+    }
+}
+
+private struct LogDateGroup: Identifiable {
     let id: String
-    let title: String
-    let recordedAt: Date
-    let duration: TimeInterval?
-    let attempts: Int
-    let ticks: Int
-    let detailEntries: [BoulderLogLibraryEntry]
-    let isSession: Bool
+    let date: Date
+    let sessionDuration: TimeInterval
+    let totalTicks: Int
+    let items: [LogDayItem]
 
     var summaryText: String {
-        return "Attempts: \(attempts) • Ticks: \(ticks)"
+        "Session Time: \(formattedSessionDuration(sessionDuration)) • Ticks: \(totalTicks)"
+    }
+
+    private func formattedSessionDuration(_ duration: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(duration.rounded(.down)))
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
     }
 }
 
@@ -698,55 +786,86 @@ private struct ProblemLibraryRow: View {
     }
 }
 
-private struct SessionLogGroupRow: View {
-    let group: SessionLogGroup
+private struct LogDateGroupRow: View {
+    let group: LogDateGroup
     @Binding var isExpanded: Bool
     let onOpen: (BoulderPreviewTarget?) -> Void
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
+        formatter.dateStyle = .full
+        formatter.timeStyle = .none
         return formatter
     }()
 
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
-            if group.detailEntries.isEmpty {
-                Text(group.isSession ? "No problem logs matched this session yet." : "No activity details available.")
+            if group.items.isEmpty {
+                Text("No activity details available.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .padding(.top, 8)
             } else {
                 VStack(spacing: 12) {
-                    ForEach(group.detailEntries) { entry in
-                        SessionLogDetailRow(entry: entry, onOpen: onOpen)
+                    ForEach(group.items) { item in
+                        switch item {
+                        case .session(let session):
+                            SessionDayRow(session: session)
+                        case .activity(let entry):
+                            ActivityLogRow(entry: entry, onOpen: onOpen)
+                        }
                     }
                 }
                 .padding(.top, 8)
             }
         } label: {
             VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(group.title)
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                    Text(group.recordedAt, formatter: Self.dateFormatter)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text(group.date, formatter: Self.dateFormatter)
+                    .font(.headline)
 
-                if let duration = group.duration {
-                    Text(formattedDuration(duration))
-                        .font(.headline)
-                }
-
-                Text("\(group.summaryText) • \(group.detailEntries.count) climbs")
+                Text(group.summaryText)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+private struct SessionDayRow: View {
+    let session: SessionLogEntry
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Session")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text(session.recordedAt, formatter: Self.timeFormatter)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text("Session Time: \(formattedDuration(session.duration))")
+                .font(.subheadline)
+
+            Text("Attempts: \(session.attempts) • Ticks: \(session.ticks)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
     }
 
     private func formattedDuration(_ duration: TimeInterval) -> String {
@@ -754,11 +873,11 @@ private struct SessionLogGroupRow: View {
         let hours = totalSeconds / 3600
         let minutes = (totalSeconds % 3600) / 60
         let seconds = totalSeconds % 60
-        return "Duration: " + String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+        return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
     }
 }
 
-private struct SessionLogDetailRow: View {
+private struct ActivityLogRow: View {
     let entry: BoulderLogLibraryEntry
     let onOpen: (BoulderPreviewTarget?) -> Void
 
