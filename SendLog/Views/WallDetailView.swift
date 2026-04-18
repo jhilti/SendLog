@@ -1,6 +1,7 @@
 import PhotosUI
 import SwiftUI
 import UIKit
+import AudioToolbox
 
 struct WallDetailView: View {
     @EnvironmentObject private var store: AppStore
@@ -440,8 +441,15 @@ struct BoulderPreviewSheet: View {
     let image: UIImage
     @State private var currentBoulderID: UUID
     @State private var wallCanvasZoomScale: CGFloat = 1
+    @State private var editingBoulder: Boulder?
     @State private var isUpdatingLog = false
+    @State private var restTimerRemaining: TimeInterval = 4 * 60
+    @State private var isRestTimerRunning = false
+    @State private var restTimerLastTick: Date?
+    @State private var didPingForRestCompletion = false
     @State private var errorMessage: String?
+
+    private let restTimerTicker = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
 
     init(wallID: UUID, image: UIImage, initialBoulderID: UUID) {
         self.wallID = wallID
@@ -526,6 +534,30 @@ struct BoulderPreviewSheet: View {
                         .padding()
                     }
                     .simultaneousGesture(problemSwipeGesture)
+                    .onReceive(restTimerTicker) { now in
+                        guard isRestTimerRunning else {
+                            return
+                        }
+
+                        let referenceDate = restTimerLastTick ?? now
+                        restTimerLastTick = now
+                        restTimerRemaining = max(0, restTimerRemaining - now.timeIntervalSince(referenceDate))
+
+                        guard restTimerRemaining <= 0 else {
+                            return
+                        }
+
+                        restTimerRemaining = 0
+                        isRestTimerRunning = false
+                        restTimerLastTick = nil
+
+                        guard !didPingForRestCompletion else {
+                            return
+                        }
+
+                        didPingForRestCompletion = true
+                        AudioServicesPlaySystemSound(1005)
+                    }
                 } else {
                     ContentUnavailableView(
                         "Problem Not Available",
@@ -537,11 +569,29 @@ struct BoulderPreviewSheet: View {
             .navigationTitle("Problem Preview")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    if let boulder = currentBoulder {
+                        Button("Edit") {
+                            editingBoulder = boulder
+                        }
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
                         dismiss()
                     }
                 }
+            }
+        }
+        .fullScreenCover(item: $editingBoulder) { boulder in
+            BoulderComposerView(wallID: wallID, editingBoulder: boulder)
+        }
+        .overlay {
+            GeometryReader { _ in
+                restTimerBadge
+                    .padding(.top, overlayTopPadding)
+                    .padding(.trailing, 12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
         }
         .sessionTimerOverlay()
@@ -561,6 +611,81 @@ struct BoulderPreviewSheet: View {
 
     private var hasUndoableAttemptOnlyLog: Bool {
         currentBoulder?.logEntries.contains(where: { $0.attempts > 0 && $0.ticks == 0 }) ?? false
+    }
+
+    private var restTimerGesture: some Gesture {
+        ExclusiveGesture(
+            TapGesture(count: 2),
+            TapGesture(count: 1)
+        )
+        .onEnded { result in
+            switch result {
+            case .first:
+                resetRestTimer()
+            case .second:
+                toggleRestTimer()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var restTimerBadge: some View {
+        HStack(spacing: 8) {
+            Image(systemName: restTimerIconName)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(restTimerTint)
+
+            Text(formattedRestTimer)
+                .font(.caption.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(restTimerTint)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.ultraThinMaterial, in: Capsule())
+        .shadow(color: .black.opacity(0.12), radius: 4, x: 0, y: 2)
+        .contentShape(Capsule())
+        .gesture(restTimerGesture)
+        .accessibilityLabel("Rest Timer")
+        .accessibilityValue(formattedRestTimer)
+        .accessibilityHint("Tap to start or pause. Double tap quickly to reset to four minutes.")
+    }
+
+    private var restTimerIconName: String {
+        if isRestTimerRunning {
+            return "pause.fill"
+        }
+
+        if restTimerRemaining <= 0 {
+            return "bell.fill"
+        }
+
+        return "timer"
+    }
+
+    private var restTimerTint: Color {
+        if restTimerRemaining <= 0 {
+            return .red
+        }
+
+        return isRestTimerRunning ? .green : .primary
+    }
+
+    private var formattedRestTimer: String {
+        let totalSeconds = max(0, Int(restTimerRemaining.rounded(.up)))
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    private var overlayTopPadding: CGFloat {
+        let windowTopInset = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?
+            .safeAreaInsets.top ?? 0
+
+        return windowTopInset + 18
     }
 
     private var currentBoulderIndex: Int? {
@@ -624,6 +749,29 @@ struct BoulderPreviewSheet: View {
             }
             isUpdatingLog = false
         }
+    }
+
+    private func toggleRestTimer() {
+        if isRestTimerRunning {
+            isRestTimerRunning = false
+            restTimerLastTick = nil
+            return
+        }
+
+        if restTimerRemaining <= 0 {
+            restTimerRemaining = 4 * 60
+        }
+
+        didPingForRestCompletion = false
+        restTimerLastTick = Date()
+        isRestTimerRunning = true
+    }
+
+    private func resetRestTimer() {
+        isRestTimerRunning = false
+        restTimerLastTick = nil
+        restTimerRemaining = 4 * 60
+        didPingForRestCompletion = false
     }
 
     private func showAdjacentBoulder(step: Int) {

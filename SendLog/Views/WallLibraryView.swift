@@ -372,29 +372,6 @@ struct WallLibraryView: View {
             .sorted { $0.logEntry.recordedAt < $1.logEntry.recordedAt }
     }
 
-    private var sessionMatchedActivityIDs: [UUID: Set<UUID>] {
-        let sessions = store.sessionLogs.sorted { $0.recordedAt < $1.recordedAt }
-        var assignedEntryIDs: Set<UUID> = []
-        var matches: [UUID: Set<UUID>] = [:]
-
-        for (index, session) in sessions.enumerated() {
-            let nextSessionStart = sessions.indices.contains(index + 1)
-                ? sessions[index + 1].recordedAt
-                : Date.distantFuture
-            let candidateEntries = allBoulderLogEntries.filter { entry in
-                !assignedEntryIDs.contains(entry.id)
-                    && entry.logEntry.recordedAt >= session.recordedAt
-                    && entry.logEntry.recordedAt < nextSessionStart
-            }
-            let detailEntries = reconstructedEntries(for: session, from: candidateEntries)
-            let matchedIDs = Set(detailEntries.map(\.id))
-            assignedEntryIDs.formUnion(matchedIDs)
-            matches[session.id] = matchedIDs
-        }
-
-        return matches
-    }
-
     private var allLogDateGroups: [LogDateGroup] {
         let calendar = Calendar.current
         var groupedItems: [Date: [LogDayItem]] = [:]
@@ -404,26 +381,45 @@ struct WallLibraryView: View {
             groupedItems[day, default: []].append(.session(session))
         }
 
-        for entry in allBoulderLogEntries {
-            let day = calendar.startOfDay(for: entry.logEntry.recordedAt)
-            groupedItems[day, default: []].append(.activity(entry))
+        let boulderLogsByDay = Dictionary(grouping: allBoulderLogEntries) { entry in
+            calendar.startOfDay(for: entry.logEntry.recordedAt)
+        }
+
+        for (day, entries) in boulderLogsByDay {
+            let groupedByBoulder = Dictionary(grouping: entries) { $0.boulder.id }
+            for summaries in groupedByBoulder.values {
+                guard let first = summaries.first else {
+                    continue
+                }
+
+                let recordedAt = summaries
+                    .map(\.logEntry.recordedAt)
+                    .max() ?? first.logEntry.recordedAt
+
+                groupedItems[day, default: []].append(
+                    .climb(
+                        DailyBoulderLogSummary(
+                            wallID: first.wallID,
+                            wallName: first.wallName,
+                            boulder: first.boulder,
+                            recordedAt: recordedAt,
+                            attempts: summaries.reduce(0) { $0 + $1.logEntry.attempts },
+                            ticks: summaries.reduce(0) { $0 + $1.logEntry.ticks }
+                        )
+                    )
+                )
+            }
         }
 
         return groupedItems.map { day, items in
             let sessions = items.compactMap(\.sessionEntry)
-            let activities = items.compactMap(\.activityEntry)
-            let matchedIDs = sessions.reduce(into: Set<UUID>()) { result, session in
-                result.formUnion(sessionMatchedActivityIDs[session.id] ?? [])
-            }
-            let extraActivityTicks = activities
-                .filter { !matchedIDs.contains($0.id) }
-                .reduce(0) { $0 + $1.logEntry.ticks }
+            let climbs = items.compactMap(\.climbSummary)
 
             return LogDateGroup(
                 id: Self.logGroupDateIDFormatter.string(from: day),
                 date: day,
                 sessionDuration: sessions.reduce(0) { $0 + $1.duration },
-                totalTicks: sessions.reduce(0) { $0 + $1.ticks } + extraActivityTicks,
+                totalTicks: climbs.reduce(0) { $0 + $1.ticks },
                 items: items.sorted { lhs, rhs in
                     if lhs.recordedAt != rhs.recordedAt {
                         return lhs.recordedAt > rhs.recordedAt
@@ -463,43 +459,16 @@ struct WallLibraryView: View {
                         || formattedSessionDuration(session.duration).localizedCaseInsensitiveContains(query)
                         || "ticks: \(session.ticks)".localizedCaseInsensitiveContains(query)
                         || itemTimestamp.localizedCaseInsensitiveContains(query)
-                case .activity(let entry):
-                    return entry.boulder.name.localizedCaseInsensitiveContains(query)
-                        || entry.boulder.grade.localizedCaseInsensitiveContains(query)
-                        || entry.wallName.localizedCaseInsensitiveContains(query)
+                case .climb(let summary):
+                    return summary.boulder.name.localizedCaseInsensitiveContains(query)
+                        || summary.boulder.grade.localizedCaseInsensitiveContains(query)
+                        || summary.wallName.localizedCaseInsensitiveContains(query)
                         || itemTimestamp.localizedCaseInsensitiveContains(query)
+                        || "attempts: \(summary.attempts)".localizedCaseInsensitiveContains(query)
+                        || "ticks: \(summary.ticks)".localizedCaseInsensitiveContains(query)
                 }
             }
         }
-    }
-
-    private func reconstructedEntries(
-        for session: SessionLogEntry,
-        from entries: [BoulderLogLibraryEntry]
-    ) -> [BoulderLogLibraryEntry] {
-        guard session.attempts > 0 || session.ticks > 0 else {
-            return []
-        }
-
-        var matchedEntries: [BoulderLogLibraryEntry] = []
-        var matchedAttempts = 0
-        var matchedTicks = 0
-
-        for entry in entries.sorted(by: { $0.logEntry.recordedAt < $1.logEntry.recordedAt }) {
-            matchedEntries.append(entry)
-            matchedAttempts += entry.logEntry.attempts
-            matchedTicks += entry.logEntry.ticks
-
-            if matchedAttempts == session.attempts && matchedTicks == session.ticks {
-                return matchedEntries
-            }
-
-            if matchedAttempts > session.attempts || matchedTicks > session.ticks {
-                return []
-            }
-        }
-
-        return []
     }
 
     private func formattedSessionDuration(_ duration: TimeInterval) -> String {
@@ -635,16 +604,27 @@ private struct BoulderLogLibraryEntry: Identifiable {
     var id: UUID { logEntry.id }
 }
 
+private struct DailyBoulderLogSummary: Identifiable {
+    let wallID: UUID
+    let wallName: String
+    let boulder: Boulder
+    let recordedAt: Date
+    let attempts: Int
+    let ticks: Int
+
+    var id: UUID { boulder.id }
+}
+
 private enum LogDayItem: Identifiable {
     case session(SessionLogEntry)
-    case activity(BoulderLogLibraryEntry)
+    case climb(DailyBoulderLogSummary)
 
     var id: String {
         switch self {
         case .session(let session):
             return "session-\(session.id.uuidString)"
-        case .activity(let entry):
-            return "activity-\(entry.id.uuidString)"
+        case .climb(let summary):
+            return "climb-\(summary.id.uuidString)"
         }
     }
 
@@ -652,8 +632,8 @@ private enum LogDayItem: Identifiable {
         switch self {
         case .session(let session):
             return session.recordedAt
-        case .activity(let entry):
-            return entry.logEntry.recordedAt
+        case .climb(let summary):
+            return summary.recordedAt
         }
     }
 
@@ -671,9 +651,9 @@ private enum LogDayItem: Identifiable {
         return nil
     }
 
-    var activityEntry: BoulderLogLibraryEntry? {
-        if case .activity(let entry) = self {
-            return entry
+    var climbSummary: DailyBoulderLogSummary? {
+        if case .climb(let summary) = self {
+            return summary
         }
         return nil
     }
@@ -811,8 +791,8 @@ private struct LogDateGroupRow: View {
                         switch item {
                         case .session(let session):
                             SessionDayRow(session: session)
-                        case .activity(let entry):
-                            ActivityLogRow(entry: entry, onOpen: onOpen)
+                        case .climb(let summary):
+                            ActivityLogRow(summary: summary, onOpen: onOpen)
                         }
                     }
                 }
@@ -878,7 +858,7 @@ private struct SessionDayRow: View {
 }
 
 private struct ActivityLogRow: View {
-    let entry: BoulderLogLibraryEntry
+    let summary: DailyBoulderLogSummary
     let onOpen: (BoulderPreviewTarget?) -> Void
 
     private static let timeFormatter: DateFormatter = {
@@ -892,33 +872,33 @@ private struct ActivityLogRow: View {
         Button {
             onOpen(
                 BoulderPreviewTarget(
-                    wallID: entry.wallID,
-                    boulderID: entry.boulder.id
+                    wallID: summary.wallID,
+                    boulderID: summary.boulder.id
                 )
             )
         } label: {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
-                        Text(entry.boulder.name)
+                        Text(summary.boulder.name)
                             .font(.headline)
-                        Text(entry.boulder.grade)
+                        Text(summary.boulder.grade)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.secondary)
                     }
 
-                    Text(entry.wallName)
+                    Text(summary.wallName)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
-                    Text("Attempts: \(entry.logEntry.attempts) • Ticks: \(entry.logEntry.ticks)")
+                    Text("Attempts: \(summary.attempts) • Ticks: \(summary.ticks)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
                 Spacer()
 
-                Text(entry.logEntry.recordedAt, formatter: Self.timeFormatter)
+                Text(summary.recordedAt, formatter: Self.timeFormatter)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
