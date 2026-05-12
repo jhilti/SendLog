@@ -50,13 +50,6 @@
             ReferencedContainer = "container:SendLog.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
-      <EnvironmentVariables>
-         <EnvironmentVariable
-            key = "SENDLOG_HOLD_DETECTION_URL"
-            value = "http://192.168.178.103:8000/detect-holds"
-            isEnabled = "YES">
-         </EnvironmentVariable>
-      </EnvironmentVariables>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"

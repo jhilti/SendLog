@@ -84,10 +84,7 @@ struct WallCanvasView: View {
                                 let accentColor: Color = isSecondarySelected ? .orange : .cyan
                                 context.stroke(path, with: .color(accentColor.opacity(0.85)), lineWidth: max(0.7, lineWidth * 0.5))
                             } else {
-                                let strokeColor: Color = rendered.source == .detected
-                                    ? .orange.opacity(0.62)
-                                    : .orange.opacity(0.58)
-                                context.stroke(path, with: .color(strokeColor), lineWidth: lineWidth)
+                                context.stroke(path, with: .color(.orange.opacity(0.58)), lineWidth: lineWidth)
                             }
 
                             let center = CGPoint(x: rect.midX, y: rect.midY)
@@ -866,8 +863,7 @@ struct WallCanvasView: View {
     }
 
     private func isManualMarker(_ hold: Hold) -> Bool {
-        hold.source == .manual
-            && hold.confidence <= 0.3
+        hold.confidence <= 0.3
             && (hold.contour?.count ?? 0) >= 10
     }
 
@@ -919,18 +915,6 @@ struct WallCanvasView: View {
     private func holdPath(for hold: Hold, in imageFrame: CGRect) -> Path {
         let rect = hold.rect.toCGRect(in: imageFrame)
         return Path(rect)
-    }
-
-    private func detectedMarkerRect(for hold: Hold, in imageFrame: CGRect) -> CGRect {
-        let rect = hold.rect.toCGRect(in: imageFrame)
-        let base = min(rect.width, rect.height)
-        let diameter = max(8, base * 0.68)
-        return CGRect(
-            x: rect.midX - (diameter / 2),
-            y: rect.midY - (diameter / 2),
-            width: diameter,
-            height: diameter
-        )
     }
 
     private func contourPath(for hold: Hold, in imageFrame: CGRect) -> Path? {

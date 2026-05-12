@@ -1,4 +1,3 @@
-import PhotosUI
 import SwiftUI
 import UIKit
 import AudioToolbox
@@ -9,14 +8,11 @@ struct WallDetailView: View {
     let wallID: UUID
 
     @State private var isCreatingBoulder = false
-    @State private var isDetectingHolds = false
     @State private var isEditingHolds = false
     @State private var selectedEditableHoldID: UUID?
     @State private var isShowingDeleteAllHoldsConfirmation = false
     @State private var previewBoulder: Boulder?
     @State private var editingBoulder: Boulder?
-    @State private var selectedMaskItem: PhotosPickerItem?
-    @State private var isSavingWallMask = false
     @State private var errorMessage: String?
 
     var body: some View {
@@ -140,7 +136,7 @@ struct WallDetailView: View {
                         }
                         Button("Cancel", role: .cancel) {}
                     } message: {
-                        Text("This removes every detected and manual hold box.")
+                        Text("This removes every hold box on this wall.")
                     }
                     .alert("Error", isPresented: Binding(
                         get: { errorMessage != nil },
@@ -151,12 +147,6 @@ struct WallDetailView: View {
                         Button("OK", role: .cancel) {}
                     } message: {
                         Text(errorMessage ?? "Unknown error")
-                    }
-                    .onChange(of: selectedMaskItem) { _, item in
-                        guard let item else { return }
-                        Task {
-                            await loadWallMask(from: item)
-                        }
                     }
                 } else {
                     ContentUnavailableView(
@@ -173,14 +163,6 @@ struct WallDetailView: View {
     private func controlPanel(for wall: Wall) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                Button {
-                    detectHolds()
-                } label: {
-                    Label(isDetectingHolds ? "Detecting..." : "Auto-Detect Holds", systemImage: "sparkles")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isDetectingHolds)
-
                 Button(isEditingHolds ? "Done Editing" : "Edit Holds") {
                     withAnimation {
                         isEditingHolds.toggle()
@@ -191,35 +173,6 @@ struct WallDetailView: View {
                 }
                 .buttonStyle(.bordered)
             }
-
-            HStack(spacing: 10) {
-                PhotosPicker(selection: $selectedMaskItem, matching: .images, photoLibrary: .shared()) {
-                    Label(
-                        wall.maskFilename == nil ? "Set Wall Mask" : "Replace Wall Mask",
-                        systemImage: "photo.badge.checkmark"
-                    )
-                }
-                .buttonStyle(.bordered)
-                .disabled(isSavingWallMask)
-
-                if wall.maskFilename != nil {
-                    Button(role: .destructive) {
-                        clearWallMask()
-                    } label: {
-                        Label("Remove Mask", systemImage: "trash")
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(isSavingWallMask)
-                }
-            }
-
-            Text(
-                wall.maskFilename == nil
-                    ? "Optional: import a black/white wall mask to restrict hold detection to the wall area."
-                    : "Wall mask enabled. Auto-detect now runs only inside the masked area."
-            )
-            .font(.footnote)
-            .foregroundStyle(.secondary)
 
             if isEditingHolds {
                 Text("Tap a hold to select it. Double-tap empty space to add a box. Use the corner controls to delete, move, or resize.")
@@ -236,21 +189,9 @@ struct WallDetailView: View {
                 }
             }
 
-            Text("\(wall.holds.count) holds detected")
+            Text("\(wall.holds.count) holds marked")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-        }
-    }
-
-    private func detectHolds() {
-        isDetectingHolds = true
-        Task {
-            do {
-                try await store.detectHolds(for: wallID)
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-            isDetectingHolds = false
         }
     }
 
@@ -349,37 +290,6 @@ struct WallDetailView: View {
         }
     }
 
-    private func clearWallMask() {
-        isSavingWallMask = true
-        Task {
-            do {
-                try await store.clearWallMask(wallID: wallID)
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-            isSavingWallMask = false
-        }
-    }
-
-    private func loadWallMask(from item: PhotosPickerItem) async {
-        isSavingWallMask = true
-        defer {
-            isSavingWallMask = false
-            selectedMaskItem = nil
-        }
-
-        do {
-            guard let data = try await item.loadTransferable(type: Data.self),
-                  UIImage(data: data) != nil else {
-                errorMessage = "Could not load the selected mask image."
-                return
-            }
-
-            try await store.setWallMask(wallID: wallID, imageData: data)
-        } catch {
-            errorMessage = "Mask import failed: \(error.localizedDescription)"
-        }
-    }
 }
 
 private struct BoulderRow: View {
