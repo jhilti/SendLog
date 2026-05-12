@@ -8,6 +8,7 @@ struct WallDetailView: View {
     let wallID: UUID
 
     @State private var isCreatingBoulder = false
+    @State private var isDetectingHolds = false
     @State private var isEditingHolds = false
     @State private var selectedEditableHoldID: UUID?
     @State private var isShowingDeleteAllHoldsConfirmation = false
@@ -163,6 +164,14 @@ struct WallDetailView: View {
     private func controlPanel(for wall: Wall) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
+                Button {
+                    detectHolds()
+                } label: {
+                    Label(isDetectingHolds ? "Detecting..." : "Detect Holds", systemImage: "sparkles")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isDetectingHolds)
+
                 Button(isEditingHolds ? "Done Editing" : "Edit Holds") {
                     withAnimation {
                         isEditingHolds.toggle()
@@ -192,6 +201,18 @@ struct WallDetailView: View {
             Text("\(wall.holds.count) holds marked")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private func detectHolds() {
+        isDetectingHolds = true
+        Task {
+            do {
+                try await store.detectHolds(for: wallID)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            isDetectingHolds = false
         }
     }
 

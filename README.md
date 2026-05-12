@@ -4,7 +4,8 @@ Offline-first iOS app for spray wall boulders.
 
 ## What this build includes
 - Import a wall photo from your library.
-- Manually mark holds on a wall image.
+- Detect holds fully offline with the bundled FastSAM/Core ML model.
+- Manually edit detected holds on a wall image.
 - Tap holds to select a boulder problem.
 - Save problems with name, fixed grade picker (`6a` to `8a`), notes, and selected holds.
 - Browse walls and saved problems fully offline.

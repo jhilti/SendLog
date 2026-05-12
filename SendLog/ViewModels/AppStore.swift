@@ -30,6 +30,7 @@ final class AppStore: ObservableObject {
         case wallNotFound
         case boulderNotFound
         case missingWallImage
+        case noHoldsDetected
         case invalidBackupData
         case unsupportedBackupVersion
 
@@ -43,6 +44,8 @@ final class AppStore: ObservableObject {
                 return "Could not find this problem."
             case .missingWallImage:
                 return "The wall image is missing from local storage."
+            case .noHoldsDetected:
+                return "No holds were detected. Try marking holds manually."
             case .invalidBackupData:
                 return "The backup file is corrupted or unsupported."
             case .unsupportedBackupVersion:
@@ -95,6 +98,7 @@ final class AppStore: ObservableObject {
 
     private let repository: WallRepository
     private let imageStore: ImageStore
+    private let holdDetector: OfflineHoldDetectionService
     private let userDefaults: UserDefaults
     private let imageCache = NSCache<NSString, UIImage>()
     private let sessionLogsKey = "sessionLogs"
@@ -105,10 +109,12 @@ final class AppStore: ObservableObject {
     init(
         repository: WallRepository = WallRepository(),
         imageStore: ImageStore = ImageStore(),
+        holdDetector: OfflineHoldDetectionService = OfflineHoldDetectionService(),
         userDefaults: UserDefaults = .standard
     ) {
         self.repository = repository
         self.imageStore = imageStore
+        self.holdDetector = holdDetector
         self.userDefaults = userDefaults
 
         Task {
@@ -230,6 +236,24 @@ final class AppStore: ObservableObject {
             throw AppStoreError.wallNotFound
         }
         walls[index].holds = []
+        walls[index].updatedAt = Date()
+        try await persist()
+    }
+
+    func detectHolds(for wallID: UUID) async throws {
+        guard let index = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+        guard let image = image(for: walls[index]) else {
+            throw AppStoreError.missingWallImage
+        }
+
+        let detected = try await holdDetector.detectHolds(in: image)
+        guard !detected.isEmpty else {
+            throw AppStoreError.noHoldsDetected
+        }
+
+        walls[index].holds = detected
         walls[index].updatedAt = Date()
         try await persist()
     }
