@@ -26,6 +26,7 @@ struct WallCanvasView: View {
     var nearestSelectionEnabled = true
     var showInlineContourUndoButton = true
     var cornerRadius: CGFloat = 14
+    var pendingHoldDetectionPoint: CGPoint? = nil
     var onZoomScaleChange: ((CGFloat) -> Void)? = nil
 
     @State private var zoomScale: CGFloat = 1
@@ -137,6 +138,20 @@ struct WallCanvasView: View {
 
                     if let editableRenderedHold {
                         editorControls(for: editableRenderedHold, in: imageFrame)
+                            .allowsHitTesting(false)
+                    }
+
+                    if let pendingHoldDetectionPoint {
+                        let point = pointFromNormalized(pendingHoldDetectionPoint, in: imageFrame)
+                        ProgressView()
+                            .controlSize(.regular)
+                            .tint(.white)
+                            .padding(12)
+                            .background(.black.opacity(0.72), in: Circle())
+                            .position(
+                                x: min(max(point.x, imageFrame.minX + 24), imageFrame.maxX - 24),
+                                y: min(max(point.y, imageFrame.minY + 24), imageFrame.maxY - 24)
+                            )
                             .allowsHitTesting(false)
                     }
                 }
@@ -915,20 +930,6 @@ struct WallCanvasView: View {
     private func holdPath(for hold: Hold, in imageFrame: CGRect) -> Path {
         let rect = hold.rect.toCGRect(in: imageFrame)
         return Path(rect)
-    }
-
-    private func contourPath(for hold: Hold, in imageFrame: CGRect) -> Path? {
-        guard let contour = hold.contour, contour.count >= 3 else {
-            return nil
-        }
-
-        var path = Path()
-        path.move(to: contour[0].toCGPoint(in: imageFrame))
-        for point in contour.dropFirst() {
-            path.addLine(to: point.toCGPoint(in: imageFrame))
-        }
-        path.closeSubpath()
-        return path
     }
 
     private func clampedScale(_ scale: CGFloat) -> CGFloat {

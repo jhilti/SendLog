@@ -288,6 +288,31 @@ final class AppStore: ObservableObject {
         return newHold.id
     }
 
+    @discardableResult
+    func addSmartMarkerHold(wallID: UUID, at normalizedPoint: CGPoint) async throws -> UUID {
+        guard let index = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+
+        let point = CGPoint(
+            x: min(max(0, normalizedPoint.x), 1),
+            y: min(max(0, normalizedPoint.y), 1)
+        )
+        let image = image(for: walls[index])
+        let newHold: Hold
+        if let image,
+           let detectedHold = try await holdDetector.detectHold(in: image, at: point) {
+            newHold = detectedHold
+        } else {
+            newHold = manualBoxHold(at: point)
+        }
+
+        walls[index].holds.append(newHold)
+        walls[index].updatedAt = Date()
+        try await persist()
+        return newHold.id
+    }
+
     func moveHold(wallID: UUID, holdID: UUID, to normalizedPoint: CGPoint) async throws {
         guard let wallIndex = wallIndex(for: wallID) else {
             throw AppStoreError.wallNotFound

@@ -22,8 +22,10 @@ struct OfflineHoldDetectionService {
 
     private struct Candidate {
         var rect: CGRect
+        var contour: [NormalizedPoint]? = nil
         var confidence: Float
         var coefficients: [Float]
+        var holdScore: Float = 0
 
         var area: CGFloat {
             rect.width * rect.height
@@ -39,16 +41,82 @@ struct OfflineHoldDetectionService {
     private static let predictionName = "var_1057"
     private static let prototypeName = "var_1095"
 
+    private struct ScoreMap {
+        var scores: [Float]
+        var wallMask: [Bool]
+        var wallArea: Int
+
+        func score(x: Int, y: Int) -> Float {
+            scores[(y * protoSize) + x]
+        }
+
+        func isWall(x: Int, y: Int) -> Bool {
+            wallMask[(y * protoSize) + x]
+        }
+    }
+
+    private struct MaskComponent {
+        var indices: [Int]
+        var minX: Int
+        var minY: Int
+        var maxX: Int
+        var maxY: Int
+    }
+
+    private struct SizeConstraints {
+        var minArea: CGFloat
+        var minPerimeter: CGFloat
+        var minMinDimension: CGFloat
+        var minMaxDimension: CGFloat
+        var maxArea: CGFloat
+        var maxPerimeter: CGFloat
+        var maxDimension: CGFloat
+    }
+
     func detectHolds(in image: UIImage, targetCount: Int = 92) async throws -> [Hold] {
         try await Task.detached(priority: .userInitiated) {
             try Self.detectHoldsSynchronously(in: image, targetCount: targetCount)
         }.value
     }
 
+    func detectHold(in image: UIImage, at normalizedPoint: CGPoint) async throws -> Hold? {
+        try await Task.detached(priority: .userInitiated) {
+            try Self.detectHoldSynchronously(in: image, at: normalizedPoint)
+        }.value
+    }
+
     private static func detectHoldsSynchronously(in image: UIImage, targetCount: Int) throws -> [Hold] {
+        let candidates = try candidatesSynchronously(in: image)
+        let selected = selectCandidates(candidates, targetCount: targetCount)
+        return selected.map { candidate in
+            hold(from: candidate)
+        }
+    }
+
+    private static func detectHoldSynchronously(in image: UIImage, at normalizedPoint: CGPoint) throws -> Hold? {
+        let point = CGPoint(
+            x: min(max(0, normalizedPoint.x), 1),
+            y: min(max(0, normalizedPoint.y), 1)
+        )
+        let modelPoint = CGPoint(
+            x: point.x * CGFloat(inputSize),
+            y: (1 - point.y) * CGFloat(inputSize)
+        )
+        let candidates = try candidatesSynchronously(in: image)
+        guard let candidate = candidate(at: modelPoint, in: candidates) else {
+            return nil
+        }
+        return hold(from: candidate)
+    }
+
+    private static func candidatesSynchronously(in image: UIImage) throws -> [Candidate] {
         guard let pixelBuffer = pixelBuffer(from: image, size: inputSize) else {
             throw DetectionError.imagePreparationFailed
         }
+        guard let scoreMap = scoreMap(from: image) else {
+            throw DetectionError.imagePreparationFailed
+        }
+        let sizeConstraints = sizeConstraints()
 
         let model = try loadModel()
         let input = try MLDictionaryFeatureProvider(dictionary: [
@@ -61,11 +129,12 @@ struct OfflineHoldDetectionService {
             throw DetectionError.invalidModelOutput
         }
 
-        let candidates = decodeCandidates(from: predictions)
-        let selected = selectCandidates(candidates, targetCount: targetCount)
-        return selected.map { candidate in
-            hold(from: candidate, prototypes: prototypes)
-        }
+        return decodeCandidates(
+            from: predictions,
+            prototypes: prototypes,
+            scoreMap: scoreMap,
+            sizeConstraints: sizeConstraints
+        )
     }
 
     private static func loadModel() throws -> MLModel {
@@ -88,7 +157,7 @@ struct OfflineHoldDetectionService {
             kCFAllocatorDefault,
             size,
             size,
-            kCVPixelFormatType_32ARGB,
+            kCVPixelFormatType_32BGRA,
             attributes as CFDictionary,
             &pixelBuffer
         )
@@ -106,7 +175,8 @@ struct OfflineHoldDetectionService {
             bitsPerComponent: 8,
             bytesPerRow: CVPixelBufferGetBytesPerRow(pixelBuffer),
             space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                | CGBitmapInfo.byteOrder32Little.rawValue
         ) else {
             return nil
         }
@@ -118,7 +188,170 @@ struct OfflineHoldDetectionService {
         return pixelBuffer
     }
 
-    private static func decodeCandidates(from predictions: MLMultiArray) -> [Candidate] {
+    private static func scoreMap(from image: UIImage) -> ScoreMap? {
+        guard let pixels = rgbaPixels(from: image, size: protoSize) else {
+            return nil
+        }
+
+        let count = protoSize * protoSize
+        var red = Array(repeating: Float(0), count: count)
+        var green = Array(repeating: Float(0), count: count)
+        var blue = Array(repeating: Float(0), count: count)
+        var gray = Array(repeating: Float(0), count: count)
+        var saturation = Array(repeating: Float(0), count: count)
+        var value = Array(repeating: Float(0), count: count)
+        var wallMask = Array(repeating: false, count: count)
+
+        for index in 0..<count {
+            let byteIndex = index * 4
+            let r = Float(pixels[byteIndex]) / 255
+            let g = Float(pixels[byteIndex + 1]) / 255
+            let b = Float(pixels[byteIndex + 2]) / 255
+            let maxChannel = max(r, max(g, b))
+            let minChannel = min(r, min(g, b))
+            let channelDelta = maxChannel - minChannel
+
+            red[index] = r
+            green[index] = g
+            blue[index] = b
+            gray[index] = (0.299 * r) + (0.587 * g) + (0.114 * b)
+            saturation[index] = maxChannel > 0 ? channelDelta / maxChannel : 0
+            value[index] = maxChannel
+            wallMask[index] = maxChannel > 0.08
+        }
+
+        let redBlur = boxBlur(red, width: protoSize, height: protoSize, radius: 5)
+        let greenBlur = boxBlur(green, width: protoSize, height: protoSize, radius: 5)
+        let blueBlur = boxBlur(blue, width: protoSize, height: protoSize, radius: 5)
+        let grayBlur = boxBlur(gray, width: protoSize, height: protoSize, radius: 4)
+
+        var colorDelta = Array(repeating: Float(0), count: count)
+        var brightnessDelta = Array(repeating: Float(0), count: count)
+        var texture = Array(repeating: Float(0), count: count)
+        var lowerBoost = Array(repeating: Float(0), count: count)
+
+        for y in 0..<protoSize {
+            let rowRatio = Float(y) / Float(max(1, protoSize - 1))
+            let rowBoost = min(1, max(0, (rowRatio - 0.70) / 0.30))
+            for x in 0..<protoSize {
+                let index = (y * protoSize) + x
+                let dr = red[index] - redBlur[index]
+                let dg = green[index] - greenBlur[index]
+                let db = blue[index] - blueBlur[index]
+                colorDelta[index] = sqrt((dr * dr) + (dg * dg) + (db * db))
+                brightnessDelta[index] = abs(gray[index] - grayBlur[index])
+                lowerBoost[index] = rowBoost
+
+                let left = gray[(y * protoSize) + max(0, x - 1)]
+                let right = gray[(y * protoSize) + min(protoSize - 1, x + 1)]
+                let up = gray[(max(0, y - 1) * protoSize) + x]
+                let down = gray[(min(protoSize - 1, y + 1) * protoSize) + x]
+                texture[index] = abs(right - left) + abs(down - up)
+            }
+        }
+
+        colorDelta = normalized(colorDelta, mask: wallMask)
+        brightnessDelta = normalized(brightnessDelta, mask: wallMask)
+        texture = normalized(texture, mask: wallMask)
+        saturation = normalized(saturation, mask: wallMask)
+        value = normalized(value, mask: wallMask)
+
+        var scores = Array(repeating: Float(0), count: count)
+        var wallArea = 0
+        for index in 0..<count where wallMask[index] {
+            wallArea += 1
+            scores[index] = (0.34 * colorDelta[index])
+                + (0.20 * saturation[index])
+                + (0.18 * brightnessDelta[index])
+                + (0.17 * texture[index])
+                + (0.06 * value[index])
+                + (0.05 * lowerBoost[index])
+        }
+
+        return ScoreMap(scores: scores, wallMask: wallMask, wallArea: wallArea)
+    }
+
+    private static func rgbaPixels(from image: UIImage, size: Int) -> [UInt8]? {
+        var pixels = Array(repeating: UInt8(0), count: size * size * 4)
+        let didDraw = pixels.withUnsafeMutableBytes { buffer in
+            guard let baseAddress = buffer.baseAddress,
+                  let context = CGContext(
+                    data: baseAddress,
+                    width: size,
+                    height: size,
+                    bitsPerComponent: 8,
+                    bytesPerRow: size * 4,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                  ) else {
+                return false
+            }
+
+            context.interpolationQuality = .high
+            UIGraphicsPushContext(context)
+            image.draw(in: CGRect(x: 0, y: 0, width: size, height: size))
+            UIGraphicsPopContext()
+            return true
+        }
+
+        return didDraw ? pixels : nil
+    }
+
+    private static func boxBlur(_ values: [Float], width: Int, height: Int, radius: Int) -> [Float] {
+        guard radius > 0 else {
+            return values
+        }
+
+        var horizontal = Array(repeating: Float(0), count: values.count)
+        for y in 0..<height {
+            var prefix = Array(repeating: Float(0), count: width + 1)
+            for x in 0..<width {
+                prefix[x + 1] = prefix[x] + values[(y * width) + x]
+            }
+            for x in 0..<width {
+                let x0 = max(0, x - radius)
+                let x1 = min(width - 1, x + radius)
+                let sum = prefix[x1 + 1] - prefix[x0]
+                let span = x1 - x0 + 1
+                horizontal[(y * width) + x] = sum / Float(span)
+            }
+        }
+
+        var blurred = Array(repeating: Float(0), count: values.count)
+        for x in 0..<width {
+            var prefix = Array(repeating: Float(0), count: height + 1)
+            for y in 0..<height {
+                prefix[y + 1] = prefix[y] + horizontal[(y * width) + x]
+            }
+            for y in 0..<height {
+                let y0 = max(0, y - radius)
+                let y1 = min(height - 1, y + radius)
+                let sum = prefix[y1 + 1] - prefix[y0]
+                let span = y1 - y0 + 1
+                blurred[(y * width) + x] = sum / Float(span)
+            }
+        }
+        return blurred
+    }
+
+    private static func normalized(_ values: [Float], mask: [Bool]) -> [Float] {
+        let masked = values.indices.compactMap { mask[$0] ? values[$0] : nil }.sorted()
+        guard masked.count > 4 else {
+            return values
+        }
+
+        let low = masked[Int(Double(masked.count - 1) * 0.02)]
+        let high = masked[Int(Double(masked.count - 1) * 0.98)]
+        let scale = max(high - low, 0.0001)
+        return values.map { min(1, max(0, ($0 - low) / scale)) }
+    }
+
+    private static func decodeCandidates(
+        from predictions: MLMultiArray,
+        prototypes: MLMultiArray,
+        scoreMap: ScoreMap,
+        sizeConstraints: SizeConstraints
+    ) -> [Candidate] {
         let channelCount = predictions.shape[1].intValue
         let candidateCount = predictions.shape[2].intValue
         guard channelCount >= 37 else {
@@ -168,11 +401,24 @@ struct OfflineHoldDetectionService {
             }
 
             let coefficients = (0..<32).map { value(channel: 5 + $0, candidate: index) }
-            candidates.append(Candidate(rect: rect, confidence: confidence, coefficients: coefficients))
+            var candidate = Candidate(rect: rect, confidence: confidence, coefficients: coefficients)
+            guard let mask = maskSummary(
+                for: candidate,
+                prototypes: prototypes,
+                scoreMap: scoreMap,
+                sizeConstraints: sizeConstraints
+            ) else {
+                continue
+            }
+
+            candidate.rect = mask.rect
+            candidate.contour = mask.contour
+            candidate.holdScore = mask.score
+            candidates.append(candidate)
         }
 
         return candidates
-            .sorted { $0.confidence > $1.confidence }
+            .sorted { $0.holdScore > $1.holdScore }
             .prefix(700)
             .map { $0 }
     }
@@ -217,14 +463,40 @@ struct OfflineHoldDetectionService {
         }
 
         return selected
-            .sorted { $0.confidence > $1.confidence }
+            .sorted { $0.holdScore > $1.holdScore }
             .prefix(targetCount)
             .sorted { sortTopToBottom($0, $1) }
     }
 
+    private static func candidate(at point: CGPoint, in candidates: [Candidate]) -> Candidate? {
+        let hitPadding: CGFloat = 12
+        let hits = candidates.filter { candidate in
+            candidate.rect.insetBy(dx: -hitPadding, dy: -hitPadding).contains(point)
+        }
+        if let bestHit = hits.max(by: { $0.holdScore < $1.holdScore }) {
+            return bestHit
+        }
+
+        let maxDistance: CGFloat = 28
+        return candidates
+            .map { candidate -> (candidate: Candidate, distance: CGFloat) in
+                let clampedX = min(max(point.x, candidate.rect.minX), candidate.rect.maxX)
+                let clampedY = min(max(point.y, candidate.rect.minY), candidate.rect.maxY)
+                return (candidate, hypot(point.x - clampedX, point.y - clampedY))
+            }
+            .filter { $0.distance <= maxDistance }
+            .max { lhs, rhs in
+                if abs(lhs.distance - rhs.distance) > 0.001 {
+                    return lhs.distance > rhs.distance
+                }
+                return lhs.candidate.holdScore < rhs.candidate.holdScore
+            }?
+            .candidate
+    }
+
     private static func suppressDuplicates(_ candidates: [Candidate]) -> [Candidate] {
         var kept: [Candidate] = []
-        for candidate in candidates.sorted(by: { $0.confidence > $1.confidence }) {
+        for candidate in candidates.sorted(by: { $0.holdScore > $1.holdScore }) {
             guard !kept.contains(where: { detectionsOverlap(candidate, $0) }) else {
                 continue
             }
@@ -254,27 +526,31 @@ struct OfflineHoldDetectionService {
         return distance < sizeLimit
     }
 
-    private static func hold(from candidate: Candidate, prototypes: MLMultiArray) -> Hold {
-        let mask = maskSummary(for: candidate, prototypes: prototypes)
-        let rect = mask?.rect ?? candidate.rect
-        let contour = mask?.contour
-
+    private static func hold(from candidate: Candidate) -> Hold {
+        let displayRect = CGRect(
+            x: candidate.rect.minX,
+            y: CGFloat(inputSize) - candidate.rect.maxY,
+            width: candidate.rect.width,
+            height: candidate.rect.height
+        )
         return Hold(
             rect: NormalizedRect(
-                x: rect.minX / CGFloat(inputSize),
-                y: rect.minY / CGFloat(inputSize),
-                width: rect.width / CGFloat(inputSize),
-                height: rect.height / CGFloat(inputSize)
+                x: displayRect.minX / CGFloat(inputSize),
+                y: displayRect.minY / CGFloat(inputSize),
+                width: displayRect.width / CGFloat(inputSize),
+                height: displayRect.height / CGFloat(inputSize)
             ).clamped(),
-            contour: contour,
-            confidence: Double(candidate.confidence)
+            contour: nil,
+            confidence: Double(candidate.holdScore)
         )
     }
 
     private static func maskSummary(
         for candidate: Candidate,
-        prototypes: MLMultiArray
-    ) -> (rect: CGRect, contour: [NormalizedPoint]?)? {
+        prototypes: MLMultiArray,
+        scoreMap: ScoreMap,
+        sizeConstraints: SizeConstraints
+    ) -> (rect: CGRect, contour: [NormalizedPoint]?, score: Float)? {
         let pointer = prototypes.dataPointer.bindMemory(to: Float.self, capacity: prototypes.count)
         let channelStride = prototypes.strides[1].intValue
         let yStride = prototypes.strides[2].intValue
@@ -292,11 +568,7 @@ struct OfflineHoldDetectionService {
         let width = px1 - px0 + 1
         let height = py1 - py0 + 1
         var mask = Array(repeating: false, count: width * height)
-        var minX = protoSize
-        var minY = protoSize
-        var maxX = 0
-        var maxY = 0
-        var count = 0
+        var rawCount = 0
 
         func prototypeValue(channel: Int, x: Int, y: Int) -> Float {
             pointer[(channel * channelStride) + (y * yStride) + (x * xStride)]
@@ -312,64 +584,240 @@ struct OfflineHoldDetectionService {
                 guard sigmoid(value) >= 0.5 else {
                     continue
                 }
+                rawCount += 1
+                guard scoreMap.isWall(x: x, y: y) else {
+                    continue
+                }
 
-                let localIndex = (y - py0) * width + (x - px0)
+                let localIndex = ((y - py0) * width) + (x - px0)
                 mask[localIndex] = true
-                minX = min(minX, x)
-                minY = min(minY, y)
-                maxX = max(maxX, x)
-                maxY = max(maxY, y)
-                count += 1
             }
         }
 
-        guard count >= 4, minX <= maxX, minY <= maxY else {
+        guard let component = largestComponent(in: mask, width: width, height: height, offsetX: px0, offsetY: py0) else {
+            return nil
+        }
+        let count = component.indices.count
+
+        let insideRatio = Float(count) / Float(max(rawCount, 1))
+        guard insideRatio >= 0.70 else {
             return nil
         }
 
         let rect = CGRect(
-            x: CGFloat(minX) * scale,
-            y: CGFloat(minY) * scale,
-            width: CGFloat(maxX - minX + 1) * scale,
-            height: CGFloat(maxY - minY + 1) * scale
+            x: CGFloat(component.minX) * scale,
+            y: CGFloat(component.minY) * scale,
+            width: CGFloat(component.maxX - component.minX + 1) * scale,
+            height: CGFloat(component.maxY - component.minY + 1) * scale
         )
 
-        var boundary: [NormalizedPoint] = []
-        for y in py0...py1 {
-            for x in px0...px1 {
-                let lx = x - px0
-                let ly = y - py0
-                let localIndex = ly * width + lx
-                guard mask[localIndex] else {
-                    continue
-                }
+        let bboxArea = max(1, (component.maxX - component.minX + 1) * (component.maxY - component.minY + 1))
+        let fillRatio = Float(count) / Float(bboxArea)
+        let aspectRatio = Float(max(rect.width, rect.height) / max(1, min(rect.width, rect.height)))
+        let areaPixels = CGFloat(count) * scale * scale
+        let perimeterPixels = CGFloat(boundaryCount(for: component, localWidth: width, localHeight: height)) * scale
+        let minDimension = min(rect.width, rect.height)
+        let maxDimension = max(rect.width, rect.height)
+        let minArea = max(14, scoreMap.wallArea / 30000)
+        let maxArea = max(minArea + 1, scoreMap.wallArea / 5)
+        guard count >= minArea, count <= maxArea, minDimension >= 3 else {
+            return nil
+        }
+        guard areaPixels >= sizeConstraints.minArea,
+              areaPixels <= sizeConstraints.maxArea,
+              perimeterPixels >= sizeConstraints.minPerimeter,
+              perimeterPixels <= sizeConstraints.maxPerimeter,
+              minDimension >= sizeConstraints.minMinDimension,
+              maxDimension >= sizeConstraints.minMaxDimension,
+              maxDimension <= sizeConstraints.maxDimension else {
+            return nil
+        }
+        guard fillRatio >= 0.055 else {
+            return nil
+        }
+        guard aspectRatio <= 8.0 || fillRatio >= 0.22 else {
+            return nil
+        }
 
-                let isBoundary = lx == 0 || ly == 0 || lx == width - 1 || ly == height - 1
-                    || !mask[localIndex - 1]
-                    || !mask[localIndex + 1]
-                    || !mask[localIndex - width]
-                    || !mask[localIndex + width]
-                guard isBoundary else {
-                    continue
-                }
+        var scoreSum: Float = 0
+        var peakScore: Float = 0
+        for localIndex in component.indices {
+            let x = (localIndex % width) + px0
+            let y = (localIndex / width) + py0
+            let localScore = scoreMap.score(x: x, y: y)
+            scoreSum += localScore
+            peakScore = max(peakScore, localScore)
+        }
+        guard peakScore >= 0.10 else {
+            return nil
+        }
 
-                boundary.append(NormalizedPoint(
-                    x: (CGFloat(x) + 0.5) / CGFloat(protoSize),
-                    y: (CGFloat(y) + 0.5) / CGFloat(protoSize)
-                ).clamped())
+        let meanScore = scoreSum / Float(max(count, 1))
+        let sizeScore = min(1, sqrt(Float(count)) / 22)
+        let score = (0.34 * candidate.confidence)
+            + (0.28 * peakScore)
+            + (0.18 * meanScore)
+            + (0.10 * min(1, fillRatio))
+            + (0.10 * sizeScore)
+        let contour = contourPoints(
+            for: component,
+            localWidth: width,
+            localHeight: height,
+            offsetX: px0,
+            offsetY: py0
+        )
+        return (rect, contour.count >= 3 ? contour : nil, score)
+    }
+
+    private static func sizeConstraints() -> SizeConstraints {
+        let referenceWidth: CGFloat = 3019
+        let referenceHeight: CGFloat = 5690
+        let xScale = CGFloat(inputSize) / referenceWidth
+        let yScale = CGFloat(inputSize) / referenceHeight
+        let areaScale = xScale * yScale
+        let minLinearScale = min(xScale, yScale)
+        let maxLinearScale = max(xScale, yScale)
+
+        return SizeConstraints(
+            minArea: 1783.9891357421875 * areaScale,
+            minPerimeter: 144.5114288330078 * minLinearScale,
+            minMinDimension: 45.0 * minLinearScale,
+            minMaxDimension: 48.0 * minLinearScale,
+            maxArea: 146212.7783203125 * areaScale,
+            maxPerimeter: 1268.0570068359375 * maxLinearScale,
+            maxDimension: 487.5 * maxLinearScale
+        )
+    }
+
+    private static func largestComponent(
+        in mask: [Bool],
+        width: Int,
+        height: Int,
+        offsetX: Int,
+        offsetY: Int
+    ) -> MaskComponent? {
+        var visited = Array(repeating: false, count: mask.count)
+        var best: MaskComponent?
+        let neighbors = [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)]
+
+        for start in mask.indices where mask[start] && !visited[start] {
+            var stack = [start]
+            var indices: [Int] = []
+            var minX = width
+            var minY = height
+            var maxX = 0
+            var maxY = 0
+            visited[start] = true
+
+            while let current = stack.popLast() {
+                indices.append(current)
+                let x = current % width
+                let y = current / width
+                minX = min(minX, x)
+                minY = min(minY, y)
+                maxX = max(maxX, x)
+                maxY = max(maxY, y)
+
+                for (dx, dy) in neighbors {
+                    let nx = x + dx
+                    let ny = y + dy
+                    guard nx >= 0, ny >= 0, nx < width, ny < height else {
+                        continue
+                    }
+                    let next = (ny * width) + nx
+                    guard mask[next], !visited[next] else {
+                        continue
+                    }
+                    visited[next] = true
+                    stack.append(next)
+                }
+            }
+
+            let component = MaskComponent(
+                indices: indices,
+                minX: minX + offsetX,
+                minY: minY + offsetY,
+                maxX: maxX + offsetX,
+                maxY: maxY + offsetY
+            )
+            if best == nil || component.indices.count > best!.indices.count {
+                best = component
             }
         }
 
-        let contour = decimated(boundary, maxCount: 80)
-        return (rect, contour.count >= 3 ? contour : nil)
+        return best
     }
 
-    private static func decimated(_ points: [NormalizedPoint], maxCount: Int) -> [NormalizedPoint] {
-        guard points.count > maxCount, maxCount > 2 else {
-            return points
+    private static func boundaryCount(for component: MaskComponent, localWidth: Int, localHeight: Int) -> Int {
+        let componentSet = Set(component.indices)
+        var count = 0
+
+        for localIndex in component.indices {
+            let x = localIndex % localWidth
+            let y = localIndex / localWidth
+            let isBoundary = x == 0 || y == 0 || x == localWidth - 1 || y == localHeight - 1
+                || !componentSet.contains(localIndex - 1)
+                || !componentSet.contains(localIndex + 1)
+                || !componentSet.contains(localIndex - localWidth)
+                || !componentSet.contains(localIndex + localWidth)
+            if isBoundary {
+                count += 1
+            }
         }
-        let step = Double(points.count - 1) / Double(maxCount - 1)
-        return (0..<maxCount).map { points[min(points.count - 1, Int(round(Double($0) * step)))] }
+
+        return count
+    }
+
+    private static func contourPoints(
+        for component: MaskComponent,
+        localWidth: Int,
+        localHeight: Int,
+        offsetX: Int,
+        offsetY: Int
+    ) -> [NormalizedPoint] {
+        let componentSet = Set(component.indices)
+        var boundary: [(x: Int, y: Int)] = []
+        boundary.reserveCapacity(component.indices.count)
+
+        for localIndex in component.indices {
+            let x = localIndex % localWidth
+            let y = localIndex / localWidth
+            let isBoundary = x == 0 || y == 0 || x == localWidth - 1 || y == localHeight - 1
+                || !componentSet.contains(localIndex - 1)
+                || !componentSet.contains(localIndex + 1)
+                || !componentSet.contains(localIndex - localWidth)
+                || !componentSet.contains(localIndex + localWidth)
+            guard isBoundary else {
+                continue
+            }
+            boundary.append((x: x + offsetX, y: y + offsetY))
+        }
+
+        guard boundary.count >= 3 else {
+            return []
+        }
+
+        let centerX = CGFloat(component.minX + component.maxX) / 2
+        let centerY = CGFloat(component.minY + component.maxY) / 2
+        let ordered = boundary.sorted { lhs, rhs in
+            atan2(CGFloat(lhs.y) - centerY, CGFloat(lhs.x) - centerX)
+                < atan2(CGFloat(rhs.y) - centerY, CGFloat(rhs.x) - centerX)
+        }
+        let decimated = decimated(ordered, maxCount: 96)
+        return decimated.map { point in
+            NormalizedPoint(
+                x: (CGFloat(point.x) + 0.5) / CGFloat(protoSize),
+                y: (CGFloat(point.y) + 0.5) / CGFloat(protoSize)
+            ).clamped()
+        }
+    }
+
+    private static func decimated<T>(_ items: [T], maxCount: Int) -> [T] {
+        guard items.count > maxCount, maxCount > 2 else {
+            return items
+        }
+        let step = Double(items.count - 1) / Double(maxCount - 1)
+        return (0..<maxCount).map { items[min(items.count - 1, Int(round(Double($0) * step)))] }
     }
 
     private static func sigmoid(_ value: Float) -> Float {
