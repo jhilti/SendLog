@@ -23,6 +23,24 @@ struct SessionLogEntry: Identifiable, Codable, Hashable {
     }
 }
 
+struct BoulderImportCandidate: Identifiable, Hashable {
+    let id: String
+    let sourceWallID: UUID
+    let sourceWallName: String
+    let sourceBoulder: Boulder
+    let matchedHoldIDs: [UUID]
+    let missingHoldCount: Int
+    let totalHoldCount: Int
+
+    var isComplete: Bool {
+        missingHoldCount == 0 && totalHoldCount > 0
+    }
+
+    var matchedHoldCount: Int {
+        matchedHoldIDs.count
+    }
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     enum AppStoreError: LocalizedError {
@@ -452,6 +470,70 @@ final class AppStore: ObservableObject {
         try await persist()
     }
 
+    func boulderImportCandidates(for wallID: UUID) -> [BoulderImportCandidate] {
+        guard let targetWall = wall(withID: wallID), !targetWall.holds.isEmpty else {
+            return []
+        }
+
+        let existingSignatures = Set(targetWall.boulders.map { boulderSignature(for: $0, holdIDs: $0.holdIDs) })
+        return walls
+            .filter { $0.id != wallID }
+            .flatMap { sourceWall in
+                sourceWall.boulders.compactMap { boulder in
+                    importCandidate(
+                        from: boulder,
+                        sourceWall: sourceWall,
+                        targetWall: targetWall,
+                        existingSignatures: existingSignatures
+                    )
+                }
+            }
+            .sorted { lhs, rhs in
+                if lhs.isComplete != rhs.isComplete {
+                    return lhs.isComplete
+                }
+                if lhs.missingHoldCount != rhs.missingHoldCount {
+                    return lhs.missingHoldCount < rhs.missingHoldCount
+                }
+                if lhs.sourceWallName != rhs.sourceWallName {
+                    return lhs.sourceWallName.localizedCaseInsensitiveCompare(rhs.sourceWallName) == .orderedAscending
+                }
+                return lhs.sourceBoulder.createdAt > rhs.sourceBoulder.createdAt
+            }
+    }
+
+    @discardableResult
+    func importBoulders(_ candidates: [BoulderImportCandidate], into wallID: UUID) async throws -> Int {
+        guard let index = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+
+        let targetHoldIDs = Set(walls[index].holds.map(\.id))
+        let imported = candidates.compactMap { candidate -> Boulder? in
+            let holdIDs = candidate.matchedHoldIDs.filter { targetHoldIDs.contains($0) }
+            guard !holdIDs.isEmpty else {
+                return nil
+            }
+
+            return Boulder(
+                wallID: wallID,
+                name: candidate.sourceBoulder.name,
+                grade: candidate.sourceBoulder.grade,
+                notes: importedNotes(for: candidate),
+                holdIDs: holdIDs
+            )
+        }
+
+        guard !imported.isEmpty else {
+            return 0
+        }
+
+        walls[index].boulders.insert(contentsOf: imported, at: 0)
+        walls[index].updatedAt = Date()
+        try await persist()
+        return imported.count
+    }
+
     func incrementBoulderTick(wallID: UUID, boulderID: UUID) async throws {
         guard let wallIdx = wallIndex(for: wallID) else {
             throw AppStoreError.wallNotFound
@@ -618,6 +700,113 @@ final class AppStore: ObservableObject {
 
     private func wallIndex(for wallID: UUID) -> Int? {
         walls.firstIndex { $0.id == wallID }
+    }
+
+    private func importCandidate(
+        from boulder: Boulder,
+        sourceWall: Wall,
+        targetWall: Wall,
+        existingSignatures: Set<String>
+    ) -> BoulderImportCandidate? {
+        let sourceHoldsByID = Dictionary(uniqueKeysWithValues: sourceWall.holds.map { ($0.id, $0) })
+        var usedTargetHoldIDs = Set<UUID>()
+        var matchedHoldIDs: [UUID] = []
+        var missingHoldCount = 0
+
+        for holdID in boulder.holdIDs {
+            guard let sourceHold = sourceHoldsByID[holdID],
+                  let targetHold = bestMatchingHold(
+                    for: sourceHold,
+                    in: targetWall.holds,
+                    excluding: usedTargetHoldIDs
+                  ) else {
+                missingHoldCount += 1
+                continue
+            }
+
+            usedTargetHoldIDs.insert(targetHold.id)
+            matchedHoldIDs.append(targetHold.id)
+        }
+
+        guard !matchedHoldIDs.isEmpty else {
+            return nil
+        }
+
+        let totalHoldCount = boulder.holdIDs.count
+        let candidate = BoulderImportCandidate(
+            id: "\(sourceWall.id.uuidString)-\(boulder.id.uuidString)",
+            sourceWallID: sourceWall.id,
+            sourceWallName: sourceWall.name,
+            sourceBoulder: boulder,
+            matchedHoldIDs: matchedHoldIDs,
+            missingHoldCount: missingHoldCount,
+            totalHoldCount: totalHoldCount
+        )
+
+        guard !existingSignatures.contains(boulderSignature(for: boulder, holdIDs: matchedHoldIDs)) else {
+            return nil
+        }
+        return candidate
+    }
+
+    private func bestMatchingHold(for sourceHold: Hold, in targetHolds: [Hold], excluding usedIDs: Set<UUID>) -> Hold? {
+        targetHolds
+            .filter { !usedIDs.contains($0.id) }
+            .compactMap { targetHold -> (hold: Hold, score: CGFloat)? in
+                let score = holdMatchScore(sourceHold.rect, targetHold.rect)
+                guard score >= 0.42 else {
+                    return nil
+                }
+                return (targetHold, score)
+            }
+            .max { lhs, rhs in
+                lhs.score < rhs.score
+            }?
+            .hold
+    }
+
+    private func holdMatchScore(_ sourceRect: NormalizedRect, _ targetRect: NormalizedRect) -> CGFloat {
+        let source = sourceRect.cgRect
+        let target = targetRect.cgRect
+        let sourceCenter = CGPoint(x: source.midX, y: source.midY)
+        let targetCenter = CGPoint(x: target.midX, y: target.midY)
+        let distance = hypot(sourceCenter.x - targetCenter.x, sourceCenter.y - targetCenter.y)
+        let sourceArea = max(source.width * source.height, 0.0001)
+        let targetArea = max(target.width * target.height, 0.0001)
+        let sizeScale = max(0.025, min(0.07, max(source.width, source.height, target.width, target.height) * 0.85))
+        let distanceScore = max(0, 1 - (distance / sizeScale))
+
+        let intersection = source.intersection(target)
+        let overlapScore: CGFloat
+        if intersection.isNull || intersection.width <= 0 || intersection.height <= 0 {
+            overlapScore = 0
+        } else {
+            let overlapArea = intersection.width * intersection.height
+            let containment = overlapArea / min(sourceArea, targetArea)
+            let iou = overlapArea / max(sourceArea + targetArea - overlapArea, 0.0001)
+            overlapScore = max(containment, iou * 1.6)
+        }
+
+        return max(distanceScore, overlapScore)
+    }
+
+    private func boulderSignature(for boulder: Boulder, holdIDs: [UUID]) -> String {
+        [
+            boulder.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            boulder.grade.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            holdIDs.map(\.uuidString).sorted().joined(separator: ",")
+        ].joined(separator: "|")
+    }
+
+    private func importedNotes(for candidate: BoulderImportCandidate) -> String {
+        let notes = candidate.sourceBoulder.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isComplete else {
+            return notes
+        }
+
+        let missingText = candidate.missingHoldCount == 1 ? "1 hold missing" : "\(candidate.missingHoldCount) holds missing"
+        let importNote = "Imported from \(candidate.sourceWallName); \(missingText)."
+        return notes.isEmpty ? importNote : "\(notes)\n\n\(importNote)"
     }
 
     private func manualBoxHold(at normalizedPoint: CGPoint) -> Hold {

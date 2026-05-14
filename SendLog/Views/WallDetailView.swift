@@ -14,6 +14,7 @@ struct WallDetailView: View {
     @State private var selectedEditableHoldID: UUID?
     @State private var pendingHoldDetectionPoint: CGPoint?
     @State private var isShowingDeleteAllHoldsConfirmation = false
+    @State private var isShowingBoulderImport = false
     @State private var previewBoulder: Boulder?
     @State private var editingBoulder: Boulder?
     @State private var errorMessage: String?
@@ -62,8 +63,24 @@ struct WallDetailView: View {
                                 .padding(.horizontal)
 
                             VStack(alignment: .leading, spacing: 16) {
-                                Text("Problems")
-                                    .font(.title3.weight(.semibold))
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text("Problems")
+                                        .font(.title3.weight(.semibold))
+
+                                    Spacer()
+
+                                    Button {
+                                        isShowingBoulderImport = true
+                                    } label: {
+                                        Label("Import From Other Walls", systemImage: "square.and.arrow.down")
+                                            .lineLimit(1)
+                                            .minimumScaleFactor(0.8)
+                                    }
+                                    .font(.subheadline.weight(.semibold))
+                                    .buttonStyle(.bordered)
+                                    .disabled(wall.holds.isEmpty)
+                                }
+
                                 Text("Tap a problem to preview its selected holds.")
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
@@ -112,6 +129,10 @@ struct WallDetailView: View {
                     }
                     .fullScreenCover(item: $editingBoulder) { boulder in
                         BoulderComposerView(wallID: wallID, editingBoulder: boulder)
+                    }
+                    .sheet(isPresented: $isShowingBoulderImport) {
+                        BoulderImportSheet(wallID: wallID)
+                            .environmentObject(store)
                     }
                     .fullScreenCover(item: $previewBoulder) { boulder in
                         if let wall = store.wall(withID: wallID),
@@ -383,6 +404,241 @@ private struct BoulderRow: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(Color(.secondarySystemBackground)))
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
+    }
+}
+
+private struct BoulderImportSheet: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+
+    let wallID: UUID
+
+    @State private var selectedCandidateIDs = Set<String>()
+    @State private var initializedSelection = false
+    @State private var isImporting = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            let candidates = store.boulderImportCandidates(for: wallID)
+
+            Group {
+                if candidates.isEmpty {
+                    ContentUnavailableView(
+                        "No Importable Problems",
+                        systemImage: "square.and.arrow.down",
+                        description: Text("Mark holds on this wall and keep older walls with saved problems to import from.")
+                    )
+                } else {
+                    List {
+                        Section {
+                            Text(summaryText(for: candidates))
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        ForEach(groups(from: candidates)) { group in
+                            Section {
+                                ForEach(group.candidates) { candidate in
+                                    BoulderImportCandidateRow(
+                                        candidate: candidate,
+                                        isSelected: selectedCandidateIDs.contains(candidate.id)
+                                    ) {
+                                        toggle(candidate)
+                                    }
+                                }
+                            } header: {
+                                Text(group.title)
+                            } footer: {
+                                Text(group.footer)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Import Problems")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                    .disabled(isImporting)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(importButtonTitle) {
+                        importSelected(from: candidates)
+                    }
+                    .disabled(selectedCandidateIDs.isEmpty || isImporting)
+                }
+            }
+            .onAppear {
+                initializeSelectionIfNeeded(candidates)
+            }
+            .onChange(of: candidates) { _, updatedCandidates in
+                initializeSelectionIfNeeded(updatedCandidates)
+                selectedCandidateIDs.formIntersection(Set(updatedCandidates.map(\.id)))
+            }
+            .alert("Import Failed", isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { newValue in
+                    if !newValue { errorMessage = nil }
+                }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(errorMessage ?? "Unknown error")
+            }
+        }
+        .sessionTimerOverlay()
+    }
+
+    private var importButtonTitle: String {
+        if isImporting {
+            return "Importing..."
+        }
+        let count = selectedCandidateIDs.count
+        return count == 1 ? "Import 1" : "Import \(count)"
+    }
+
+    private func initializeSelectionIfNeeded(_ candidates: [BoulderImportCandidate]) {
+        guard !initializedSelection else {
+            return
+        }
+        selectedCandidateIDs = Set(candidates.filter(\.isComplete).map(\.id))
+        initializedSelection = true
+    }
+
+    private func toggle(_ candidate: BoulderImportCandidate) {
+        guard candidate.matchedHoldCount > 0 else {
+            return
+        }
+        if selectedCandidateIDs.contains(candidate.id) {
+            selectedCandidateIDs.remove(candidate.id)
+        } else {
+            selectedCandidateIDs.insert(candidate.id)
+        }
+    }
+
+    private func importSelected(from candidates: [BoulderImportCandidate]) {
+        let selected = candidates.filter { selectedCandidateIDs.contains($0.id) }
+        guard !selected.isEmpty else {
+            return
+        }
+
+        isImporting = true
+        Task {
+            do {
+                _ = try await store.importBoulders(selected, into: wallID)
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+                isImporting = false
+            }
+        }
+    }
+
+    private func summaryText(for candidates: [BoulderImportCandidate]) -> String {
+        let completeCount = candidates.filter(\.isComplete).count
+        let partialCount = candidates.count - completeCount
+        let completeText = completeCount == 1 ? "1 problem can be imported completely" : "\(completeCount) problems can be imported completely"
+        let partialText = partialCount == 1 ? "1 problem has missing or changed holds" : "\(partialCount) problems have missing or changed holds"
+        return "\(completeText). \(partialText). Partial imports keep only the matched holds."
+    }
+
+    private func groups(from candidates: [BoulderImportCandidate]) -> [BoulderImportGroup] {
+        let grouped = Dictionary(grouping: candidates, by: \.sourceWallID)
+        return grouped.values
+            .compactMap { candidates in
+                guard let first = candidates.first else {
+                    return nil
+                }
+                let sorted = candidates.sorted { lhs, rhs in
+                    if lhs.isComplete != rhs.isComplete {
+                        return lhs.isComplete
+                    }
+                    if lhs.missingHoldCount != rhs.missingHoldCount {
+                        return lhs.missingHoldCount < rhs.missingHoldCount
+                    }
+                    return lhs.sourceBoulder.name.localizedCaseInsensitiveCompare(rhs.sourceBoulder.name) == .orderedAscending
+                }
+                let completeCount = sorted.filter(\.isComplete).count
+                let partialCount = sorted.count - completeCount
+                return BoulderImportGroup(
+                    sourceWallID: first.sourceWallID,
+                    title: first.sourceWallName,
+                    footer: "\(completeCount) complete, \(partialCount) missing or changed.",
+                    candidates: sorted
+                )
+            }
+            .sorted { lhs, rhs in
+                lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+    }
+}
+
+private struct BoulderImportGroup: Identifiable {
+    let sourceWallID: UUID
+    let title: String
+    let footer: String
+    let candidates: [BoulderImportCandidate]
+
+    var id: UUID {
+        sourceWallID
+    }
+}
+
+private struct BoulderImportCandidateRow: View {
+    let candidate: BoulderImportCandidate
+    let isSelected: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? .green : .secondary)
+                    .padding(.top, 2)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 8) {
+                        Text(candidate.sourceBoulder.name)
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+
+                        Text(candidate.sourceBoulder.grade)
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(.secondary.opacity(0.18), in: Capsule())
+                    }
+
+                    Text(statusText)
+                        .font(.subheadline)
+                        .foregroundStyle(candidate.isComplete ? .green : .orange)
+
+                    if !candidate.sourceBoulder.notes.isEmpty {
+                        Text(candidate.sourceBoulder.notes)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var statusText: String {
+        if candidate.isComplete {
+            return "All \(candidate.totalHoldCount) holds present"
+        }
+        let missing = candidate.missingHoldCount == 1 ? "1 missing/changed hold" : "\(candidate.missingHoldCount) missing/changed holds"
+        return "\(candidate.matchedHoldCount)/\(candidate.totalHoldCount) holds matched, \(missing)"
     }
 }
 
