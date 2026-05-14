@@ -26,6 +26,7 @@ struct OfflineHoldDetectionService {
         var confidence: Float
         var coefficients: [Float]
         var holdScore: Float = 0
+        var maskPixels: Set<Int> = []
 
         var area: CGFloat {
             rect.width * rect.height
@@ -98,12 +99,12 @@ struct OfflineHoldDetectionService {
             x: min(max(0, normalizedPoint.x), 1),
             y: min(max(0, normalizedPoint.y), 1)
         )
-        let modelPoint = CGPoint(
+        let displayPoint = CGPoint(
             x: point.x * CGFloat(inputSize),
-            y: (1 - point.y) * CGFloat(inputSize)
+            y: point.y * CGFloat(inputSize)
         )
         let candidates = try candidatesSynchronously(in: image)
-        guard let candidate = candidate(at: modelPoint, in: candidates) else {
+        guard let candidate = candidate(atDisplayPoint: displayPoint, in: candidates) else {
             return nil
         }
         return hold(from: candidate)
@@ -413,6 +414,7 @@ struct OfflineHoldDetectionService {
 
             candidate.rect = mask.rect
             candidate.contour = mask.contour
+            candidate.maskPixels = mask.maskPixels
             candidate.holdScore = mask.score
             candidates.append(candidate)
         }
@@ -468,19 +470,37 @@ struct OfflineHoldDetectionService {
             .sorted { sortTopToBottom($0, $1) }
     }
 
-    private static func candidate(at point: CGPoint, in candidates: [Candidate]) -> Candidate? {
-        let hitPadding: CGFloat = 6
+    private static func candidate(atDisplayPoint point: CGPoint, in candidates: [Candidate]) -> Candidate? {
+        let modelPoint = CGPoint(
+            x: point.x,
+            y: CGFloat(inputSize) - point.y
+        )
+        let scale = CGFloat(inputSize) / CGFloat(protoSize)
+        let protoX = min(max(0, Int(modelPoint.x / scale)), protoSize - 1)
+        let protoY = min(max(0, Int(modelPoint.y / scale)), protoSize - 1)
         let hits = candidates.filter { candidate in
-            candidate.rect.insetBy(dx: -hitPadding, dy: -hitPadding).contains(point)
+            maskContains(candidate, protoX: protoX, protoY: protoY)
         }
         return hits.max { lhs, rhs in
-            let lhsDistance = hypot(point.x - lhs.center.x, point.y - lhs.center.y)
-            let rhsDistance = hypot(point.x - rhs.center.x, point.y - rhs.center.y)
+            let lhsDistance = hypot(modelPoint.x - lhs.center.x, modelPoint.y - lhs.center.y)
+            let rhsDistance = hypot(modelPoint.x - rhs.center.x, modelPoint.y - rhs.center.y)
             if abs(lhsDistance - rhsDistance) > 0.001 {
                 return lhsDistance > rhsDistance
             }
             return lhs.holdScore < rhs.holdScore
         }
+    }
+
+    private static func maskContains(_ candidate: Candidate, protoX: Int, protoY: Int) -> Bool {
+        let radius = 2
+        for y in max(0, protoY - radius)...min(protoSize - 1, protoY + radius) {
+            for x in max(0, protoX - radius)...min(protoSize - 1, protoX + radius) {
+                if candidate.maskPixels.contains((y * protoSize) + x) {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     private static func suppressDuplicates(_ candidates: [Candidate]) -> [Candidate] {
@@ -539,7 +559,7 @@ struct OfflineHoldDetectionService {
         prototypes: MLMultiArray,
         scoreMap: ScoreMap,
         sizeConstraints: SizeConstraints
-    ) -> (rect: CGRect, contour: [NormalizedPoint]?, score: Float)? {
+    ) -> (rect: CGRect, contour: [NormalizedPoint]?, maskPixels: Set<Int>, score: Float)? {
         let pointer = prototypes.dataPointer.bindMemory(to: Float.self, capacity: prototypes.count)
         let channelStride = prototypes.strides[1].intValue
         let yStride = prototypes.strides[2].intValue
@@ -655,7 +675,12 @@ struct OfflineHoldDetectionService {
             offsetX: px0,
             offsetY: py0
         )
-        return (rect, contour.count >= 3 ? contour : nil, score)
+        let maskPixels = Set(component.indices.map { localIndex in
+            let x = (localIndex % width) + px0
+            let y = (localIndex / width) + py0
+            return (y * protoSize) + x
+        })
+        return (rect, contour.count >= 3 ? contour : nil, maskPixels, score)
     }
 
     private static func sizeConstraints() -> SizeConstraints {

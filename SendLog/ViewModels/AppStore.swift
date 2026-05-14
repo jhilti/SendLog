@@ -306,15 +306,13 @@ final class AppStore: ObservableObject {
         let newHold: Hold
         if let image,
            let detectedHold = try await holdDetector.detectHold(in: image, at: point) {
-            if let existingHold = overlappingHold(for: detectedHold, in: walls[index].holds) {
-                return existingHold.id
+            if overlappingHold(for: detectedHold, in: walls[index].holds) != nil {
+                newHold = manualBoxHold(at: point)
+            } else {
+                newHold = detectedHold
             }
-            newHold = detectedHold
         } else {
             newHold = manualBoxHold(at: point)
-            if let existingHold = overlappingHold(for: newHold, in: walls[index].holds) {
-                return existingHold.id
-            }
         }
 
         walls[index].holds.append(newHold)
