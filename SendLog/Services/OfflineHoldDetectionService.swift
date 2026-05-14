@@ -469,29 +469,18 @@ struct OfflineHoldDetectionService {
     }
 
     private static func candidate(at point: CGPoint, in candidates: [Candidate]) -> Candidate? {
-        let hitPadding: CGFloat = 12
+        let hitPadding: CGFloat = 6
         let hits = candidates.filter { candidate in
             candidate.rect.insetBy(dx: -hitPadding, dy: -hitPadding).contains(point)
         }
-        if let bestHit = hits.max(by: { $0.holdScore < $1.holdScore }) {
-            return bestHit
-        }
-
-        let maxDistance: CGFloat = 28
-        return candidates
-            .map { candidate -> (candidate: Candidate, distance: CGFloat) in
-                let clampedX = min(max(point.x, candidate.rect.minX), candidate.rect.maxX)
-                let clampedY = min(max(point.y, candidate.rect.minY), candidate.rect.maxY)
-                return (candidate, hypot(point.x - clampedX, point.y - clampedY))
+        return hits.max { lhs, rhs in
+            let lhsDistance = hypot(point.x - lhs.center.x, point.y - lhs.center.y)
+            let rhsDistance = hypot(point.x - rhs.center.x, point.y - rhs.center.y)
+            if abs(lhsDistance - rhsDistance) > 0.001 {
+                return lhsDistance > rhsDistance
             }
-            .filter { $0.distance <= maxDistance }
-            .max { lhs, rhs in
-                if abs(lhs.distance - rhs.distance) > 0.001 {
-                    return lhs.distance > rhs.distance
-                }
-                return lhs.candidate.holdScore < rhs.candidate.holdScore
-            }?
-            .candidate
+            return lhs.holdScore < rhs.holdScore
+        }
     }
 
     private static func suppressDuplicates(_ candidates: [Candidate]) -> [Candidate] {

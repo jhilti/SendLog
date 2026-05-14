@@ -302,6 +302,9 @@ final class AppStore: ObservableObject {
         let newHold: Hold
         if let image,
            let detectedHold = try await holdDetector.detectHold(in: image, at: point) {
+            if let existingHold = overlappingHold(for: detectedHold, in: walls[index].holds) {
+                return existingHold.id
+            }
             newHold = detectedHold
         } else {
             newHold = manualBoxHold(at: point)
@@ -625,6 +628,20 @@ final class AppStore: ObservableObject {
             contour: nil,
             confidence: 0.35
         )
+    }
+
+    private func overlappingHold(for hold: Hold, in existingHolds: [Hold]) -> Hold? {
+        existingHolds.first { existingHold in
+            let overlap = hold.rect.cgRect.intersection(existingHold.rect.cgRect)
+            guard !overlap.isNull, overlap.width > 0, overlap.height > 0 else {
+                return false
+            }
+
+            let overlapArea = overlap.width * overlap.height
+            let holdArea = max(hold.rect.width * hold.rect.height, 0.0001)
+            let existingArea = max(existingHold.rect.width * existingHold.rect.height, 0.0001)
+            return overlapArea / min(holdArea, existingArea) >= 0.35
+        }
     }
 
     private func movedHold(_ hold: Hold, to normalizedCenter: CGPoint) -> Hold {

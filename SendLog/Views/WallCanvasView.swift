@@ -349,6 +349,13 @@ struct WallCanvasView: View {
             return
         }
 
+        let normalizedPoint = normalizedPoint(from: unscaledLocation, in: imageFrame)
+
+        if !isDoubleTap, editableHold != nil, onEmptyImageTap != nil {
+            onEmptyImageTap?(normalizedPoint)
+            return
+        }
+
         if let hold = holds.reversed().first(where: { holdContains($0, point: unscaledLocation, imageFrame: imageFrame) }) {
             if isDoubleTap, let onHoldDoubleTap {
                 onHoldDoubleTap(hold)
@@ -368,7 +375,6 @@ struct WallCanvasView: View {
             return
         }
 
-        let normalizedPoint = normalizedPoint(from: unscaledLocation, in: imageFrame)
         if isDoubleTap, let onEmptyImageDoubleTap {
             onEmptyImageDoubleTap(normalizedPoint)
             return
@@ -832,28 +838,44 @@ struct WallCanvasView: View {
     private func holdControlRect(for hold: Hold, corner: HoldControlCorner, in imageFrame: CGRect) -> CGRect {
         let rect = hold.rect.toCGRect(in: imageFrame)
         let size = holdControlSize(for: rect)
-        let inset = size * 0.28
+        let gap = max(10, size * 0.45)
+        let halfSize = size / 2
+        let verticalOffset = max((rect.height / 2) + gap + halfSize, size * 1.35)
 
-        let center: CGPoint
+        let requestedCenter: CGPoint
         switch corner {
         case .topLeading:
-            center = CGPoint(x: rect.minX + inset, y: rect.minY + inset)
+            requestedCenter = CGPoint(
+                x: rect.minX - gap - halfSize,
+                y: rect.minY - gap - halfSize
+            )
         case .topTrailing:
-            center = CGPoint(x: rect.maxX - inset, y: rect.minY + inset)
+            requestedCenter = CGPoint(
+                x: rect.maxX + gap + halfSize,
+                y: rect.minY - gap - halfSize
+            )
         case .bottomTrailing:
-            center = CGPoint(x: rect.maxX - inset, y: rect.maxY - inset)
+            requestedCenter = CGPoint(
+                x: rect.midX,
+                y: rect.maxY + verticalOffset
+            )
         }
 
+        let center = CGPoint(
+            x: min(max(requestedCenter.x, imageFrame.minX + halfSize), imageFrame.maxX - halfSize),
+            y: min(max(requestedCenter.y, imageFrame.minY + halfSize), imageFrame.maxY - halfSize)
+        )
+
         return CGRect(
-            x: center.x - (size / 2),
-            y: center.y - (size / 2),
+            x: center.x - halfSize,
+            y: center.y - halfSize,
             width: size,
             height: size
         )
     }
 
     private func holdControlSize(for rect: CGRect) -> CGFloat {
-        min(28, max(18, min(rect.width, rect.height) * 0.32))
+        min(24, max(18, min(rect.width, rect.height) * 0.38))
     }
 
     private func resizedRect(for hold: Hold, draggingBottomRightTo location: CGPoint, in imageFrame: CGRect) -> NormalizedRect {

@@ -52,7 +52,7 @@ struct WallDetailView: View {
                                 } : nil,
                                 isZoomEnabled: true,
                                 isContourDrawEnabled: false,
-                                nearestSelectionEnabled: !isEditingHolds,
+                                nearestSelectionEnabled: true,
                                 showInlineContourUndoButton: false,
                                 cornerRadius: 0,
                                 pendingHoldDetectionPoint: pendingHoldDetectionPoint
@@ -256,6 +256,11 @@ struct WallDetailView: View {
 
     private func handleEditableImageTap(_ point: CGPoint) {
         guard isEditingHolds, !isFittingHold else {
+            return
+        }
+
+        if selectedEditableHoldID != nil {
+            selectedEditableHoldID = nil
             return
         }
 
