@@ -13,8 +13,24 @@ targets:
       - path: SendLog
         excludes:
           - Resources/Info.plist
+          - Views/SessionTimerOverlay.swift
     info:
       path: SendLog/Resources/Info.plist
+      properties:
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        NSPhotoLibraryUsageDescription: Import wall photos to build and save boulder problems offline.
+        NSPhotoLibraryAddUsageDescription: Save exported wall images and backups from SendLog.
+        UILaunchStoryboardName: LaunchScreen
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jhilki.SendLog
@@ -34,3 +50,16 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         DEVELOPMENT_TEAM: Y53LL7K6KC
+schemes:
+  SendLog:
+    build:
+      targets:
+        SendLog: all
+    run:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

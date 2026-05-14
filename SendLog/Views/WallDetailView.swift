@@ -1,4 +1,3 @@
-import PhotosUI
 import SwiftUI
 import UIKit
 import AudioToolbox
@@ -10,13 +9,13 @@ struct WallDetailView: View {
 
     @State private var isCreatingBoulder = false
     @State private var isDetectingHolds = false
+    @State private var isFittingHold = false
     @State private var isEditingHolds = false
     @State private var selectedEditableHoldID: UUID?
+    @State private var pendingHoldDetectionPoint: CGPoint?
     @State private var isShowingDeleteAllHoldsConfirmation = false
     @State private var previewBoulder: Boulder?
     @State private var editingBoulder: Boulder?
-    @State private var selectedMaskItem: PhotosPickerItem?
-    @State private var isSavingWallMask = false
     @State private var errorMessage: String?
 
     var body: some View {
@@ -31,7 +30,7 @@ struct WallDetailView: View {
                                 image: image,
                                 holds: wall.holds,
                                 selectedHoldIDs: [],
-                                showsInactiveHolds: isEditingHolds,
+                                showsInactiveHolds: isEditingHolds || !wall.holds.isEmpty,
                                 editableHoldID: selectedEditableHoldID,
                                 onHoldTap: isEditingHolds ? { hold in
                                     handleEditableHoldTap(hold)
@@ -39,11 +38,11 @@ struct WallDetailView: View {
                                 onHoldDelete: isEditingHolds ? { hold in
                                     handleHoldTap(hold)
                                 } : nil,
-                                onEmptyImageTap: isEditingHolds ? { _ in
-                                    handleEditableEmptyTap()
+                                onEmptyImageTap: isEditingHolds && !isFittingHold ? { point in
+                                    handleEditableImageTap(point)
                                 } : nil,
-                                onEmptyImageDoubleTap: isEditingHolds ? { point in
-                                    handleEditableImageDoubleTap(point)
+                                onEmptyImageDoubleTap: isEditingHolds && !isFittingHold ? { point in
+                                    handleEditableImageTap(point)
                                 } : nil,
                                 onHoldDragEnd: isEditingHolds ? { hold, point in
                                     handleEditableHoldMove(hold: hold, to: point)
@@ -55,12 +54,14 @@ struct WallDetailView: View {
                                 isContourDrawEnabled: false,
                                 nearestSelectionEnabled: !isEditingHolds,
                                 showInlineContourUndoButton: false,
-                                cornerRadius: 0
+                                cornerRadius: 0,
+                                pendingHoldDetectionPoint: pendingHoldDetectionPoint
                             )
 
-                            VStack(alignment: .leading, spacing: 16) {
-                                controlPanel(for: wall)
+                            controlPanel(for: wall)
+                                .padding(.horizontal)
 
+                            VStack(alignment: .leading, spacing: 16) {
                                 Text("Problems")
                                     .font(.title3.weight(.semibold))
                                 Text("Tap a problem to preview its selected holds.")
@@ -91,13 +92,11 @@ struct WallDetailView: View {
                             }
                             .padding(.horizontal)
                         }
-                        .padding(.bottom, 12)
+                        .padding(.top, 12)
+                        .padding(.bottom, 40)
                     }
                     .navigationTitle(wall.name)
                     .navigationBarTitleDisplayMode(.inline)
-                    .contentMargins(.top, 0, for: .scrollContent)
-                    .contentMargins(.top, 0, for: .scrollIndicators)
-                    .ignoresSafeArea(edges: .top)
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
                             Button {
@@ -140,7 +139,7 @@ struct WallDetailView: View {
                         }
                         Button("Cancel", role: .cancel) {}
                     } message: {
-                        Text("This removes every detected and manual hold box.")
+                        Text("This removes every hold box on this wall.")
                     }
                     .alert("Error", isPresented: Binding(
                         get: { errorMessage != nil },
@@ -151,12 +150,6 @@ struct WallDetailView: View {
                         Button("OK", role: .cancel) {}
                     } message: {
                         Text(errorMessage ?? "Unknown error")
-                    }
-                    .onChange(of: selectedMaskItem) { _, item in
-                        guard let item else { return }
-                        Task {
-                            await loadWallMask(from: item)
-                        }
                     }
                 } else {
                     ContentUnavailableView(
@@ -176,10 +169,10 @@ struct WallDetailView: View {
                 Button {
                     detectHolds()
                 } label: {
-                    Label(isDetectingHolds ? "Detecting..." : "Auto-Detect Holds", systemImage: "sparkles")
+                    Label(isDetectingHolds ? "Detecting..." : "Detect Holds", systemImage: "sparkles")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(isDetectingHolds)
+                .disabled(isDetectingHolds || isFittingHold)
 
                 Button(isEditingHolds ? "Done Editing" : "Edit Holds") {
                     withAnimation {
@@ -190,41 +183,23 @@ struct WallDetailView: View {
                     }
                 }
                 .buttonStyle(.bordered)
+                .disabled(isDetectingHolds || isFittingHold)
             }
-
-            HStack(spacing: 10) {
-                PhotosPicker(selection: $selectedMaskItem, matching: .images, photoLibrary: .shared()) {
-                    Label(
-                        wall.maskFilename == nil ? "Set Wall Mask" : "Replace Wall Mask",
-                        systemImage: "photo.badge.checkmark"
-                    )
-                }
-                .buttonStyle(.bordered)
-                .disabled(isSavingWallMask)
-
-                if wall.maskFilename != nil {
-                    Button(role: .destructive) {
-                        clearWallMask()
-                    } label: {
-                        Label("Remove Mask", systemImage: "trash")
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(isSavingWallMask)
-                }
-            }
-
-            Text(
-                wall.maskFilename == nil
-                    ? "Optional: import a black/white wall mask to restrict hold detection to the wall area."
-                    : "Wall mask enabled. Auto-detect now runs only inside the masked area."
-            )
-            .font(.footnote)
-            .foregroundStyle(.secondary)
 
             if isEditingHolds {
-                Text("Tap a hold to select it. Double-tap empty space to add a box. Use the corner controls to delete, move, or resize.")
-                    .font(.footnote)
+                if isFittingHold {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Fitting hold...")
+                            .font(.footnote.weight(.semibold))
+                    }
                     .foregroundStyle(.secondary)
+                } else {
+                    Text("Tap an unmarked hold to auto-fit a box. Tap a marked box to select it. Use the corner controls to delete, move, or resize.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
 
                 if !wall.holds.isEmpty {
                     Button(role: .destructive) {
@@ -233,10 +208,11 @@ struct WallDetailView: View {
                         Label("Delete All Holds", systemImage: "trash")
                     }
                     .buttonStyle(.bordered)
+                    .disabled(isFittingHold)
                 }
             }
 
-            Text("\(wall.holds.count) holds detected")
+            Text("\(wall.holds.count) holds marked")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
@@ -278,24 +254,32 @@ struct WallDetailView: View {
         selectedEditableHoldID = hold.id
     }
 
-    private func handleEditableEmptyTap() {
-        guard isEditingHolds else {
-            return
-        }
-        selectedEditableHoldID = nil
-    }
-
-    private func handleEditableImageDoubleTap(_ point: CGPoint) {
-        guard isEditingHolds else {
+    private func handleEditableImageTap(_ point: CGPoint) {
+        guard isEditingHolds, !isFittingHold else {
             return
         }
 
+        if selectedEditableHoldID != nil {
+            selectedEditableHoldID = nil
+            return
+        }
+
+        isFittingHold = true
+        pendingHoldDetectionPoint = point
         Task {
             do {
-                let newHoldID = try await store.addManualMarkerHold(wallID: wallID, at: point)
-                selectedEditableHoldID = newHoldID
+                let newHoldID = try await store.addSmartMarkerHold(wallID: wallID, at: point)
+                await MainActor.run {
+                    selectedEditableHoldID = newHoldID
+                    isFittingHold = false
+                    pendingHoldDetectionPoint = nil
+                }
             } catch {
-                errorMessage = error.localizedDescription
+                await MainActor.run {
+                    errorMessage = error.localizedDescription
+                    isFittingHold = false
+                    pendingHoldDetectionPoint = nil
+                }
             }
         }
     }
@@ -349,37 +333,6 @@ struct WallDetailView: View {
         }
     }
 
-    private func clearWallMask() {
-        isSavingWallMask = true
-        Task {
-            do {
-                try await store.clearWallMask(wallID: wallID)
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-            isSavingWallMask = false
-        }
-    }
-
-    private func loadWallMask(from item: PhotosPickerItem) async {
-        isSavingWallMask = true
-        defer {
-            isSavingWallMask = false
-            selectedMaskItem = nil
-        }
-
-        do {
-            guard let data = try await item.loadTransferable(type: Data.self),
-                  UIImage(data: data) != nil else {
-                errorMessage = "Could not load the selected mask image."
-                return
-            }
-
-            try await store.setWallMask(wallID: wallID, imageData: data)
-        } catch {
-            errorMessage = "Mask import failed: \(error.localizedDescription)"
-        }
-    }
 }
 
 private struct BoulderRow: View {

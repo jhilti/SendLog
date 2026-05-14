@@ -26,6 +26,7 @@ struct WallCanvasView: View {
     var nearestSelectionEnabled = true
     var showInlineContourUndoButton = true
     var cornerRadius: CGFloat = 14
+    var pendingHoldDetectionPoint: CGPoint? = nil
     var onZoomScaleChange: ((CGFloat) -> Void)? = nil
 
     @State private var zoomScale: CGFloat = 1
@@ -84,10 +85,7 @@ struct WallCanvasView: View {
                                 let accentColor: Color = isSecondarySelected ? .orange : .cyan
                                 context.stroke(path, with: .color(accentColor.opacity(0.85)), lineWidth: max(0.7, lineWidth * 0.5))
                             } else {
-                                let strokeColor: Color = rendered.source == .detected
-                                    ? .orange.opacity(0.62)
-                                    : .orange.opacity(0.58)
-                                context.stroke(path, with: .color(strokeColor), lineWidth: lineWidth)
+                                context.stroke(path, with: .color(.orange.opacity(0.58)), lineWidth: lineWidth)
                             }
 
                             let center = CGPoint(x: rect.midX, y: rect.midY)
@@ -140,6 +138,20 @@ struct WallCanvasView: View {
 
                     if let editableRenderedHold {
                         editorControls(for: editableRenderedHold, in: imageFrame)
+                            .allowsHitTesting(false)
+                    }
+
+                    if let pendingHoldDetectionPoint {
+                        let point = pointFromNormalized(pendingHoldDetectionPoint, in: imageFrame)
+                        ProgressView()
+                            .controlSize(.regular)
+                            .tint(.white)
+                            .padding(12)
+                            .background(.black.opacity(0.72), in: Circle())
+                            .position(
+                                x: min(max(point.x, imageFrame.minX + 24), imageFrame.maxX - 24),
+                                y: min(max(point.y, imageFrame.minY + 24), imageFrame.maxY - 24)
+                            )
                             .allowsHitTesting(false)
                     }
                 }
@@ -337,6 +349,13 @@ struct WallCanvasView: View {
             return
         }
 
+        let normalizedPoint = normalizedPoint(from: unscaledLocation, in: imageFrame)
+
+        if !isDoubleTap, editableHold != nil, onEmptyImageTap != nil {
+            onEmptyImageTap?(normalizedPoint)
+            return
+        }
+
         if let hold = holds.reversed().first(where: { holdContains($0, point: unscaledLocation, imageFrame: imageFrame) }) {
             if isDoubleTap, let onHoldDoubleTap {
                 onHoldDoubleTap(hold)
@@ -356,7 +375,6 @@ struct WallCanvasView: View {
             return
         }
 
-        let normalizedPoint = normalizedPoint(from: unscaledLocation, in: imageFrame)
         if isDoubleTap, let onEmptyImageDoubleTap {
             onEmptyImageDoubleTap(normalizedPoint)
             return
@@ -511,7 +529,7 @@ struct WallCanvasView: View {
                 let fingerLocation = locationInUnscaledCanvas(from: value.location, imageFrame: imageFrame)
                 resizedHoldRect = resizedRect(
                     for: hold,
-                    draggingBottomRightTo: fingerLocation,
+                    draggingResizeHandleTo: fingerLocation,
                     in: imageFrame
                 )
                 return true
@@ -561,7 +579,7 @@ struct WallCanvasView: View {
 
             let finalRect = resizedHoldRect ?? resizedRect(
                 for: hold,
-                draggingBottomRightTo: locationInUnscaledCanvas(from: value.location, imageFrame: imageFrame),
+                draggingResizeHandleTo: locationInUnscaledCanvas(from: value.location, imageFrame: imageFrame),
                 in: imageFrame
             )
             onHoldResizeEnd?(hold, finalRect)
@@ -820,54 +838,67 @@ struct WallCanvasView: View {
     private func holdControlRect(for hold: Hold, corner: HoldControlCorner, in imageFrame: CGRect) -> CGRect {
         let rect = hold.rect.toCGRect(in: imageFrame)
         let size = holdControlSize(for: rect)
-        let inset = size * 0.28
+        let gap = max(10, size * 0.45)
+        let halfSize = size / 2
+        let verticalOffset = max((rect.height / 2) + gap + halfSize, size * 1.35)
 
-        let center: CGPoint
+        let requestedCenter: CGPoint
         switch corner {
         case .topLeading:
-            center = CGPoint(x: rect.minX + inset, y: rect.minY + inset)
+            requestedCenter = CGPoint(
+                x: rect.minX - gap - halfSize,
+                y: rect.minY - gap - halfSize
+            )
         case .topTrailing:
-            center = CGPoint(x: rect.maxX - inset, y: rect.minY + inset)
+            requestedCenter = CGPoint(
+                x: rect.maxX + gap + halfSize,
+                y: rect.minY - gap - halfSize
+            )
         case .bottomTrailing:
-            center = CGPoint(x: rect.maxX - inset, y: rect.maxY - inset)
+            requestedCenter = CGPoint(
+                x: rect.midX,
+                y: rect.maxY + verticalOffset
+            )
         }
 
+        let center = CGPoint(
+            x: min(max(requestedCenter.x, imageFrame.minX + halfSize), imageFrame.maxX - halfSize),
+            y: min(max(requestedCenter.y, imageFrame.minY + halfSize), imageFrame.maxY - halfSize)
+        )
+
         return CGRect(
-            x: center.x - (size / 2),
-            y: center.y - (size / 2),
+            x: center.x - halfSize,
+            y: center.y - halfSize,
             width: size,
             height: size
         )
     }
 
     private func holdControlSize(for rect: CGRect) -> CGFloat {
-        min(28, max(18, min(rect.width, rect.height) * 0.32))
+        min(24, max(18, min(rect.width, rect.height) * 0.38))
     }
 
-    private func resizedRect(for hold: Hold, draggingBottomRightTo location: CGPoint, in imageFrame: CGRect) -> NormalizedRect {
+    private func resizedRect(for hold: Hold, draggingResizeHandleTo location: CGPoint, in imageFrame: CGRect) -> NormalizedRect {
         let startRect = hold.rect.toCGRect(in: imageFrame)
+        let center = CGPoint(x: startRect.midX, y: startRect.midY)
         let minPixelWidth = max(18, imageFrame.width * 0.025)
         let minPixelHeight = max(14, imageFrame.height * 0.022)
 
-        let clampedPoint = CGPoint(
-            x: min(max(location.x, startRect.minX + minPixelWidth), imageFrame.maxX),
-            y: min(max(location.y, startRect.minY + minPixelHeight), imageFrame.maxY)
-        )
-
-        let requestedWidth = min(max(clampedPoint.x - startRect.minX, minPixelWidth), imageFrame.maxX - startRect.minX)
-        let requestedHeight = min(max(clampedPoint.y - startRect.minY, minPixelHeight), imageFrame.maxY - startRect.minY)
+        let maxPixelWidth = max(minPixelWidth, 2 * min(center.x - imageFrame.minX, imageFrame.maxX - center.x))
+        let maxPixelHeight = max(minPixelHeight, 2 * min(center.y - imageFrame.minY, imageFrame.maxY - center.y))
+        let requestedWidth = min(max(abs(location.x - center.x) * 2, minPixelWidth), maxPixelWidth)
+        let requestedHeight = min(max(abs(location.y - center.y) * 2, minPixelHeight), maxPixelHeight)
 
         return NormalizedRect(
-            x: hold.rect.x,
-            y: hold.rect.y,
+            x: ((center.x - (requestedWidth / 2)) - imageFrame.minX) / imageFrame.width,
+            y: ((center.y - (requestedHeight / 2)) - imageFrame.minY) / imageFrame.height,
             width: requestedWidth / imageFrame.width,
             height: requestedHeight / imageFrame.height
         ).clamped()
     }
 
     private func isManualMarker(_ hold: Hold) -> Bool {
-        hold.source == .manual
-            && hold.confidence <= 0.3
+        hold.confidence <= 0.3
             && (hold.contour?.count ?? 0) >= 10
     }
 
@@ -919,32 +950,6 @@ struct WallCanvasView: View {
     private func holdPath(for hold: Hold, in imageFrame: CGRect) -> Path {
         let rect = hold.rect.toCGRect(in: imageFrame)
         return Path(rect)
-    }
-
-    private func detectedMarkerRect(for hold: Hold, in imageFrame: CGRect) -> CGRect {
-        let rect = hold.rect.toCGRect(in: imageFrame)
-        let base = min(rect.width, rect.height)
-        let diameter = max(8, base * 0.68)
-        return CGRect(
-            x: rect.midX - (diameter / 2),
-            y: rect.midY - (diameter / 2),
-            width: diameter,
-            height: diameter
-        )
-    }
-
-    private func contourPath(for hold: Hold, in imageFrame: CGRect) -> Path? {
-        guard let contour = hold.contour, contour.count >= 3 else {
-            return nil
-        }
-
-        var path = Path()
-        path.move(to: contour[0].toCGPoint(in: imageFrame))
-        for point in contour.dropFirst() {
-            path.addLine(to: point.toCGPoint(in: imageFrame))
-        }
-        path.closeSubpath()
-        return path
     }
 
     private func clampedScale(_ scale: CGFloat) -> CGFloat {

@@ -87,13 +87,4 @@ struct NormalizedRect: Codable, Hashable {
         )
     }
 
-    static func fromVisionRect(_ visionRect: CGRect) -> NormalizedRect {
-        let converted = NormalizedRect(
-            x: visionRect.minX,
-            y: 1 - visionRect.maxY,
-            width: visionRect.width,
-            height: visionRect.height
-        )
-        return converted.clamped()
-    }
 }

@@ -4,7 +4,6 @@ struct Wall: Identifiable, Codable, Hashable {
     let id: UUID
     var name: String
     var imageFilename: String
-    var maskFilename: String?
     var holds: [Hold]
     var boulders: [Boulder]
     let createdAt: Date
@@ -14,7 +13,6 @@ struct Wall: Identifiable, Codable, Hashable {
         id: UUID = UUID(),
         name: String,
         imageFilename: String,
-        maskFilename: String? = nil,
         holds: [Hold] = [],
         boulders: [Boulder] = [],
         createdAt: Date = Date(),
@@ -23,7 +21,6 @@ struct Wall: Identifiable, Codable, Hashable {
         self.id = id
         self.name = name
         self.imageFilename = imageFilename
-        self.maskFilename = maskFilename
         self.holds = holds
         self.boulders = boulders
         self.createdAt = createdAt
