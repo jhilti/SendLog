@@ -41,6 +41,45 @@ struct BoulderImportCandidate: Identifiable, Hashable {
     }
 }
 
+private struct HoldGeometryTransform {
+    let a: CGFloat
+    let b: CGFloat
+    let c: CGFloat
+    let d: CGFloat
+    let tx: CGFloat
+    let ty: CGFloat
+
+    static let identity = HoldGeometryTransform(a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0)
+
+    func applying(to point: CGPoint) -> CGPoint {
+        CGPoint(
+            x: (a * point.x) + (b * point.y) + tx,
+            y: (c * point.x) + (d * point.y) + ty
+        )
+    }
+
+    func applying(to rect: NormalizedRect) -> NormalizedRect {
+        let source = rect.cgRect
+        let points = [
+            CGPoint(x: source.minX, y: source.minY),
+            CGPoint(x: source.maxX, y: source.minY),
+            CGPoint(x: source.maxX, y: source.maxY),
+            CGPoint(x: source.minX, y: source.maxY)
+        ].map { applying(to: $0) }
+
+        let minX = points.map(\.x).min() ?? source.minX
+        let maxX = points.map(\.x).max() ?? source.maxX
+        let minY = points.map(\.y).min() ?? source.minY
+        let maxY = points.map(\.y).max() ?? source.maxY
+        return NormalizedRect(
+            x: minX,
+            y: minY,
+            width: max(0.01, maxX - minX),
+            height: max(0.01, maxY - minY)
+        ).clamped()
+    }
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     enum AppStoreError: LocalizedError {
@@ -479,12 +518,14 @@ final class AppStore: ObservableObject {
         return walls
             .filter { $0.id != wallID }
             .flatMap { sourceWall in
-                sourceWall.boulders.compactMap { boulder in
+                let transform = bestGeometryTransform(from: sourceWall.holds, to: targetWall.holds)
+                return sourceWall.boulders.compactMap { boulder in
                     importCandidate(
                         from: boulder,
                         sourceWall: sourceWall,
                         targetWall: targetWall,
-                        existingSignatures: existingSignatures
+                        existingSignatures: existingSignatures,
+                        transform: transform
                     )
                 }
             }
@@ -520,7 +561,11 @@ final class AppStore: ObservableObject {
                 name: candidate.sourceBoulder.name,
                 grade: candidate.sourceBoulder.grade,
                 notes: importedNotes(for: candidate),
-                holdIDs: holdIDs
+                holdIDs: holdIDs,
+                attemptCount: candidate.sourceBoulder.attemptCount,
+                tickCount: candidate.sourceBoulder.tickCount,
+                logEntries: candidate.sourceBoulder.logEntries,
+                createdAt: candidate.sourceBoulder.createdAt
             )
         }
 
@@ -706,7 +751,8 @@ final class AppStore: ObservableObject {
         from boulder: Boulder,
         sourceWall: Wall,
         targetWall: Wall,
-        existingSignatures: Set<String>
+        existingSignatures: Set<String>,
+        transform: HoldGeometryTransform
     ) -> BoulderImportCandidate? {
         let sourceHoldsByID = Dictionary(uniqueKeysWithValues: sourceWall.holds.map { ($0.id, $0) })
         var usedTargetHoldIDs = Set<UUID>()
@@ -717,6 +763,7 @@ final class AppStore: ObservableObject {
             guard let sourceHold = sourceHoldsByID[holdID],
                   let targetHold = bestMatchingHold(
                     for: sourceHold,
+                    transform: transform,
                     in: targetWall.holds,
                     excluding: usedTargetHoldIDs
                   ) else {
@@ -749,12 +796,18 @@ final class AppStore: ObservableObject {
         return candidate
     }
 
-    private func bestMatchingHold(for sourceHold: Hold, in targetHolds: [Hold], excluding usedIDs: Set<UUID>) -> Hold? {
-        targetHolds
+    private func bestMatchingHold(
+        for sourceHold: Hold,
+        transform: HoldGeometryTransform,
+        in targetHolds: [Hold],
+        excluding usedIDs: Set<UUID>
+    ) -> Hold? {
+        let transformedRect = transform.applying(to: sourceHold.rect)
+        return targetHolds
             .filter { !usedIDs.contains($0.id) }
             .compactMap { targetHold -> (hold: Hold, score: CGFloat)? in
-                let score = holdMatchScore(sourceHold.rect, targetHold.rect)
-                guard score >= 0.42 else {
+                let score = holdMatchScore(transformedRect, targetHold.rect)
+                guard score >= 0.38 else {
                     return nil
                 }
                 return (targetHold, score)
@@ -763,6 +816,201 @@ final class AppStore: ObservableObject {
                 lhs.score < rhs.score
             }?
             .hold
+    }
+
+    private func bestGeometryTransform(from sourceHolds: [Hold], to targetHolds: [Hold]) -> HoldGeometryTransform {
+        let candidates = geometryTransformCandidates(from: sourceHolds, to: targetHolds)
+        return candidates.max { lhs, rhs in
+            geometryTransformScore(lhs, sourceHolds: sourceHolds, targetHolds: targetHolds)
+                < geometryTransformScore(rhs, sourceHolds: sourceHolds, targetHolds: targetHolds)
+        } ?? .identity
+    }
+
+    private func geometryTransformCandidates(from sourceHolds: [Hold], to targetHolds: [Hold]) -> [HoldGeometryTransform] {
+        var candidates: [HoldGeometryTransform] = [.identity]
+
+        if let boundsTransform = boundsTransform(from: sourceHolds, to: targetHolds) {
+            candidates.append(boundsTransform)
+        }
+        candidates.append(contentsOf: principalAxisTransforms(from: sourceHolds, to: targetHolds))
+        return candidates
+    }
+
+    private func geometryTransformScore(
+        _ transform: HoldGeometryTransform,
+        sourceHolds: [Hold],
+        targetHolds: [Hold]
+    ) -> CGFloat {
+        guard !sourceHolds.isEmpty, !targetHolds.isEmpty else {
+            return 0
+        }
+
+        var totalScore: CGFloat = 0
+        var matchedCount = 0
+        for sourceHold in sourceHolds {
+            let transformedRect = transform.applying(to: sourceHold.rect)
+            let bestScore = targetHolds
+                .map { holdMatchScore(transformedRect, $0.rect) }
+                .max() ?? 0
+            if bestScore >= 0.34 {
+                matchedCount += 1
+                totalScore += bestScore
+            }
+        }
+
+        return (CGFloat(matchedCount) * 12) + totalScore
+    }
+
+    private func boundsTransform(from sourceHolds: [Hold], to targetHolds: [Hold]) -> HoldGeometryTransform? {
+        guard let sourceBounds = centerBounds(for: sourceHolds),
+              let targetBounds = centerBounds(for: targetHolds),
+              sourceBounds.width > 0.01,
+              sourceBounds.height > 0.01 else {
+            return nil
+        }
+
+        let scaleX = targetBounds.width / sourceBounds.width
+        let scaleY = targetBounds.height / sourceBounds.height
+        return HoldGeometryTransform(
+            a: scaleX,
+            b: 0,
+            c: 0,
+            d: scaleY,
+            tx: targetBounds.midX - (sourceBounds.midX * scaleX),
+            ty: targetBounds.midY - (sourceBounds.midY * scaleY)
+        )
+    }
+
+    private func principalAxisTransforms(from sourceHolds: [Hold], to targetHolds: [Hold]) -> [HoldGeometryTransform] {
+        guard let sourceStats = principalAxisStats(for: sourceHolds),
+              let targetStats = principalAxisStats(for: targetHolds),
+              sourceStats.spreadX > 0.005,
+              sourceStats.spreadY > 0.005 else {
+            return []
+        }
+
+        let scaleX = targetStats.spreadX / sourceStats.spreadX
+        let scaleY = targetStats.spreadY / sourceStats.spreadY
+        let signPairs: [(CGFloat, CGFloat)] = [(1, 1), (-1, 1), (1, -1), (-1, -1)]
+        return signPairs.map { signX, signY in
+            affineTransform(
+                source: sourceStats,
+                target: targetStats,
+                scaleX: scaleX * signX,
+                scaleY: scaleY * signY
+            )
+        }
+    }
+
+    private func affineTransform(
+        source: PrincipalAxisStats,
+        target: PrincipalAxisStats,
+        scaleX: CGFloat,
+        scaleY: CGFloat
+    ) -> HoldGeometryTransform {
+        let sx1 = source.axisX
+        let sy1 = source.axisY
+        let tx1 = target.axisX
+        let ty1 = target.axisY
+
+        let a = (tx1.dx * scaleX * sx1.dx) + (ty1.dx * scaleY * sy1.dx)
+        let b = (tx1.dx * scaleX * sx1.dy) + (ty1.dx * scaleY * sy1.dy)
+        let c = (tx1.dy * scaleX * sx1.dx) + (ty1.dy * scaleY * sy1.dx)
+        let d = (tx1.dy * scaleX * sx1.dy) + (ty1.dy * scaleY * sy1.dy)
+        let mappedSourceMean = CGPoint(
+            x: (a * source.mean.x) + (b * source.mean.y),
+            y: (c * source.mean.x) + (d * source.mean.y)
+        )
+
+        return HoldGeometryTransform(
+            a: a,
+            b: b,
+            c: c,
+            d: d,
+            tx: target.mean.x - mappedSourceMean.x,
+            ty: target.mean.y - mappedSourceMean.y
+        )
+    }
+
+    private struct PrincipalAxisStats {
+        let mean: CGPoint
+        let axisX: CGVector
+        let axisY: CGVector
+        let spreadX: CGFloat
+        let spreadY: CGFloat
+    }
+
+    private func principalAxisStats(for holds: [Hold]) -> PrincipalAxisStats? {
+        let points = holds.map { center(of: $0.rect) }
+        guard points.count >= 3 else {
+            return nil
+        }
+
+        let mean = CGPoint(
+            x: points.map(\.x).reduce(0, +) / CGFloat(points.count),
+            y: points.map(\.y).reduce(0, +) / CGFloat(points.count)
+        )
+        var xx: CGFloat = 0
+        var xy: CGFloat = 0
+        var yy: CGFloat = 0
+        for point in points {
+            let dx = point.x - mean.x
+            let dy = point.y - mean.y
+            xx += dx * dx
+            xy += dx * dy
+            yy += dy * dy
+        }
+
+        let angle = 0.5 * atan2(2 * xy, xx - yy)
+        let axisX = CGVector(dx: cos(angle), dy: sin(angle))
+        let axisY = CGVector(dx: -sin(angle), dy: cos(angle))
+        let projectedX = points.map { (($0.x - mean.x) * axisX.dx) + (($0.y - mean.y) * axisX.dy) }
+        let projectedY = points.map { (($0.x - mean.x) * axisY.dx) + (($0.y - mean.y) * axisY.dy) }
+        let spreadX = robustSpread(projectedX)
+        let spreadY = robustSpread(projectedY)
+        return PrincipalAxisStats(mean: mean, axisX: axisX, axisY: axisY, spreadX: spreadX, spreadY: spreadY)
+    }
+
+    private func centerBounds(for holds: [Hold]) -> CGRect? {
+        let points = holds.map { center(of: $0.rect) }
+        guard points.count >= 2 else {
+            return nil
+        }
+
+        let xs = points.map(\.x).sorted()
+        let ys = points.map(\.y).sorted()
+        let minX = percentile(xs, 0.08)
+        let maxX = percentile(xs, 0.92)
+        let minY = percentile(ys, 0.08)
+        let maxY = percentile(ys, 0.92)
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
+    private func center(of rect: NormalizedRect) -> CGPoint {
+        CGPoint(x: rect.x + (rect.width / 2), y: rect.y + (rect.height / 2))
+    }
+
+    private func robustSpread(_ values: [CGFloat]) -> CGFloat {
+        let sorted = values.sorted()
+        guard sorted.count >= 2 else {
+            return 0
+        }
+        return max(0.0001, percentile(sorted, 0.92) - percentile(sorted, 0.08))
+    }
+
+    private func percentile(_ sortedValues: [CGFloat], _ percentile: CGFloat) -> CGFloat {
+        guard !sortedValues.isEmpty else {
+            return 0
+        }
+        let clamped = min(max(0, percentile), 1)
+        let rawIndex = clamped * CGFloat(sortedValues.count - 1)
+        let lowerIndex = Int(floor(rawIndex))
+        let upperIndex = Int(ceil(rawIndex))
+        guard lowerIndex != upperIndex else {
+            return sortedValues[lowerIndex]
+        }
+        let fraction = rawIndex - CGFloat(lowerIndex)
+        return sortedValues[lowerIndex] + ((sortedValues[upperIndex] - sortedValues[lowerIndex]) * fraction)
     }
 
     private func holdMatchScore(_ sourceRect: NormalizedRect, _ targetRect: NormalizedRect) -> CGFloat {
