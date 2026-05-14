@@ -52,7 +52,7 @@ struct WallDetailView: View {
                                 } : nil,
                                 isZoomEnabled: true,
                                 isContourDrawEnabled: false,
-                                nearestSelectionEnabled: true,
+                                nearestSelectionEnabled: !isEditingHolds,
                                 showInlineContourUndoButton: false,
                                 cornerRadius: 0,
                                 pendingHoldDetectionPoint: pendingHoldDetectionPoint

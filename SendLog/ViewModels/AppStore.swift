@@ -298,6 +298,10 @@ final class AppStore: ObservableObject {
             x: min(max(0, normalizedPoint.x), 1),
             y: min(max(0, normalizedPoint.y), 1)
         )
+        if let existingHold = hold(at: point, in: walls[index].holds) {
+            return existingHold.id
+        }
+
         let image = image(for: walls[index])
         let newHold: Hold
         if let image,
@@ -308,6 +312,9 @@ final class AppStore: ObservableObject {
             newHold = detectedHold
         } else {
             newHold = manualBoxHold(at: point)
+            if let existingHold = overlappingHold(for: newHold, in: walls[index].holds) {
+                return existingHold.id
+            }
         }
 
         walls[index].holds.append(newHold)
@@ -631,16 +638,32 @@ final class AppStore: ObservableObject {
     }
 
     private func overlappingHold(for hold: Hold, in existingHolds: [Hold]) -> Hold? {
-        existingHolds.first { existingHold in
-            let overlap = hold.rect.cgRect.intersection(existingHold.rect.cgRect)
-            guard !overlap.isNull, overlap.width > 0, overlap.height > 0 else {
-                return false
-            }
+        existingHolds
+            .compactMap { existingHold -> (hold: Hold, score: CGFloat)? in
+                let overlap = hold.rect.cgRect.intersection(existingHold.rect.cgRect)
+                guard !overlap.isNull, overlap.width > 0, overlap.height > 0 else {
+                    return nil
+                }
 
-            let overlapArea = overlap.width * overlap.height
-            let holdArea = max(hold.rect.width * hold.rect.height, 0.0001)
-            let existingArea = max(existingHold.rect.width * existingHold.rect.height, 0.0001)
-            return overlapArea / min(holdArea, existingArea) >= 0.35
+                let overlapArea = overlap.width * overlap.height
+                let holdArea = max(hold.rect.width * hold.rect.height, 0.0001)
+                let existingArea = max(existingHold.rect.width * existingHold.rect.height, 0.0001)
+                let smallerOverlap = overlapArea / min(holdArea, existingArea)
+                let unionOverlap = overlapArea / max(holdArea + existingArea - overlapArea, 0.0001)
+                guard smallerOverlap >= 0.25 || unionOverlap >= 0.12 else {
+                    return nil
+                }
+                return (existingHold, max(smallerOverlap, unionOverlap))
+            }
+            .max { lhs, rhs in
+                lhs.score < rhs.score
+            }?
+            .hold
+    }
+
+    private func hold(at point: CGPoint, in existingHolds: [Hold]) -> Hold? {
+        existingHolds.reversed().first { hold in
+            hold.rect.cgRect.insetBy(dx: -0.004, dy: -0.004).contains(point)
         }
     }
 

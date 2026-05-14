@@ -529,7 +529,7 @@ struct WallCanvasView: View {
                 let fingerLocation = locationInUnscaledCanvas(from: value.location, imageFrame: imageFrame)
                 resizedHoldRect = resizedRect(
                     for: hold,
-                    draggingBottomRightTo: fingerLocation,
+                    draggingResizeHandleTo: fingerLocation,
                     in: imageFrame
                 )
                 return true
@@ -579,7 +579,7 @@ struct WallCanvasView: View {
 
             let finalRect = resizedHoldRect ?? resizedRect(
                 for: hold,
-                draggingBottomRightTo: locationInUnscaledCanvas(from: value.location, imageFrame: imageFrame),
+                draggingResizeHandleTo: locationInUnscaledCanvas(from: value.location, imageFrame: imageFrame),
                 in: imageFrame
             )
             onHoldResizeEnd?(hold, finalRect)
@@ -878,22 +878,20 @@ struct WallCanvasView: View {
         min(24, max(18, min(rect.width, rect.height) * 0.38))
     }
 
-    private func resizedRect(for hold: Hold, draggingBottomRightTo location: CGPoint, in imageFrame: CGRect) -> NormalizedRect {
+    private func resizedRect(for hold: Hold, draggingResizeHandleTo location: CGPoint, in imageFrame: CGRect) -> NormalizedRect {
         let startRect = hold.rect.toCGRect(in: imageFrame)
+        let center = CGPoint(x: startRect.midX, y: startRect.midY)
         let minPixelWidth = max(18, imageFrame.width * 0.025)
         let minPixelHeight = max(14, imageFrame.height * 0.022)
 
-        let clampedPoint = CGPoint(
-            x: min(max(location.x, startRect.minX + minPixelWidth), imageFrame.maxX),
-            y: min(max(location.y, startRect.minY + minPixelHeight), imageFrame.maxY)
-        )
-
-        let requestedWidth = min(max(clampedPoint.x - startRect.minX, minPixelWidth), imageFrame.maxX - startRect.minX)
-        let requestedHeight = min(max(clampedPoint.y - startRect.minY, minPixelHeight), imageFrame.maxY - startRect.minY)
+        let maxPixelWidth = max(minPixelWidth, 2 * min(center.x - imageFrame.minX, imageFrame.maxX - center.x))
+        let maxPixelHeight = max(minPixelHeight, 2 * min(center.y - imageFrame.minY, imageFrame.maxY - center.y))
+        let requestedWidth = min(max(abs(location.x - center.x) * 2, minPixelWidth), maxPixelWidth)
+        let requestedHeight = min(max(abs(location.y - center.y) * 2, minPixelHeight), maxPixelHeight)
 
         return NormalizedRect(
-            x: hold.rect.x,
-            y: hold.rect.y,
+            x: ((center.x - (requestedWidth / 2)) - imageFrame.minX) / imageFrame.width,
+            y: ((center.y - (requestedHeight / 2)) - imageFrame.minY) / imageFrame.height,
             width: requestedWidth / imageFrame.width,
             height: requestedHeight / imageFrame.height
         ).clamped()
