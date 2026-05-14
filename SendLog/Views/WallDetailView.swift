@@ -417,13 +417,16 @@ private struct BoulderImportSheet: View {
     @State private var initializedSelection = false
     @State private var isImporting = false
     @State private var errorMessage: String?
+    @State private var editedMatchedHoldIDsByCandidateID: [String: [UUID]] = [:]
+    @State private var compareCandidate: BoulderImportCandidate?
 
     var body: some View {
         NavigationStack {
             let candidates = store.boulderImportCandidates(for: wallID)
+            let effectiveCandidates = candidates.map(effectiveCandidate)
 
             Group {
-                if candidates.isEmpty {
+                if effectiveCandidates.isEmpty {
                     ContentUnavailableView(
                         "No Importable Problems",
                         systemImage: "square.and.arrow.down",
@@ -432,19 +435,22 @@ private struct BoulderImportSheet: View {
                 } else {
                     List {
                         Section {
-                            Text(summaryText(for: candidates))
+                            Text(summaryText(for: effectiveCandidates))
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
 
-                        ForEach(groups(from: candidates)) { group in
+                        ForEach(groups(from: effectiveCandidates)) { group in
                             Section {
                                 ForEach(group.candidates) { candidate in
                                     BoulderImportCandidateRow(
                                         candidate: candidate,
-                                        isSelected: selectedCandidateIDs.contains(candidate.id)
+                                        isSelected: selectedCandidateIDs.contains(candidate.id),
+                                        showsCompareButton: !candidate.isComplete || editedMatchedHoldIDsByCandidateID[candidate.id] != nil
                                     ) {
                                         toggle(candidate)
+                                    } onCompare: {
+                                        compareCandidate = candidate
                                     }
                                 }
                             } header: {
@@ -467,17 +473,30 @@ private struct BoulderImportSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(importButtonTitle) {
-                        importSelected(from: candidates)
+                        importSelected(from: effectiveCandidates)
                     }
                     .disabled(selectedCandidateIDs.isEmpty || isImporting)
                 }
             }
             .onAppear {
-                initializeSelectionIfNeeded(candidates)
+                initializeSelectionIfNeeded(effectiveCandidates)
             }
             .onChange(of: candidates) { _, updatedCandidates in
-                initializeSelectionIfNeeded(updatedCandidates)
-                selectedCandidateIDs.formIntersection(Set(updatedCandidates.map(\.id)))
+                let updatedEffectiveCandidates = updatedCandidates.map(effectiveCandidate)
+                initializeSelectionIfNeeded(updatedEffectiveCandidates)
+                selectedCandidateIDs.formIntersection(Set(updatedEffectiveCandidates.map(\.id)))
+                editedMatchedHoldIDsByCandidateID = editedMatchedHoldIDsByCandidateID.filter { candidateID, _ in
+                    updatedEffectiveCandidates.contains { $0.id == candidateID }
+                }
+            }
+            .sheet(item: $compareCandidate) { candidate in
+                BoulderImportCompareEditSheet(
+                    wallID: wallID,
+                    candidate: effectiveCandidate(candidate)
+                ) { holdIDs in
+                    update(candidate, with: holdIDs)
+                }
+                .environmentObject(store)
             }
             .alert("Import Failed", isPresented: Binding(
                 get: { errorMessage != nil },
@@ -509,6 +528,23 @@ private struct BoulderImportSheet: View {
         initializedSelection = true
     }
 
+    private func effectiveCandidate(_ candidate: BoulderImportCandidate) -> BoulderImportCandidate {
+        guard let editedHoldIDs = editedMatchedHoldIDsByCandidateID[candidate.id] else {
+            return candidate
+        }
+
+        let uniqueHoldIDs = Array(NSOrderedSet(array: editedHoldIDs).compactMap { $0 as? UUID })
+        return BoulderImportCandidate(
+            id: candidate.id,
+            sourceWallID: candidate.sourceWallID,
+            sourceWallName: candidate.sourceWallName,
+            sourceBoulder: candidate.sourceBoulder,
+            matchedHoldIDs: uniqueHoldIDs,
+            missingHoldCount: max(0, candidate.totalHoldCount - uniqueHoldIDs.count),
+            totalHoldCount: candidate.totalHoldCount
+        )
+    }
+
     private func toggle(_ candidate: BoulderImportCandidate) {
         guard candidate.matchedHoldCount > 0 else {
             return
@@ -518,6 +554,16 @@ private struct BoulderImportSheet: View {
         } else {
             selectedCandidateIDs.insert(candidate.id)
         }
+    }
+
+    private func update(_ candidate: BoulderImportCandidate, with holdIDs: [UUID]) {
+        editedMatchedHoldIDsByCandidateID[candidate.id] = holdIDs
+        if holdIDs.isEmpty {
+            selectedCandidateIDs.remove(candidate.id)
+        } else {
+            selectedCandidateIDs.insert(candidate.id)
+        }
+        compareCandidate = nil
     }
 
     private func importSelected(from candidates: [BoulderImportCandidate]) {
@@ -591,46 +637,58 @@ private struct BoulderImportGroup: Identifiable {
 private struct BoulderImportCandidateRow: View {
     let candidate: BoulderImportCandidate
     let isSelected: Bool
+    let showsCompareButton: Bool
     let onToggle: () -> Void
+    let onCompare: () -> Void
 
     var body: some View {
-        Button(action: onToggle) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.title3)
-                    .foregroundStyle(isSelected ? .green : .secondary)
-                    .padding(.top, 2)
+        VStack(alignment: .leading, spacing: 10) {
+            Button(action: onToggle) {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundStyle(isSelected ? .green : .secondary)
+                        .padding(.top, 2)
 
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 8) {
-                        Text(candidate.sourceBoulder.name)
-                            .font(.headline)
-                            .foregroundStyle(.primary)
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 8) {
+                            Text(candidate.sourceBoulder.name)
+                                .font(.headline)
+                                .foregroundStyle(.primary)
 
-                        Text(candidate.sourceBoulder.grade)
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(.secondary.opacity(0.18), in: Capsule())
+                            Text(candidate.sourceBoulder.grade)
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(.secondary.opacity(0.18), in: Capsule())
+                        }
+
+                        Text(statusText)
+                            .font(.subheadline)
+                            .foregroundStyle(candidate.isComplete ? .green : .orange)
+
+                        if !candidate.sourceBoulder.notes.isEmpty {
+                            Text(candidate.sourceBoulder.notes)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
                     }
 
-                    Text(statusText)
-                        .font(.subheadline)
-                        .foregroundStyle(candidate.isComplete ? .green : .orange)
-
-                    if !candidate.sourceBoulder.notes.isEmpty {
-                        Text(candidate.sourceBoulder.notes)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
+                    Spacer(minLength: 0)
                 }
-
-                Spacer(minLength: 0)
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+
+            if showsCompareButton {
+                Button(action: onCompare) {
+                    Label("Compare & Edit", systemImage: "rectangle.split.2x1")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+            }
         }
-        .buttonStyle(.plain)
     }
 
     private var statusText: String {
@@ -639,6 +697,151 @@ private struct BoulderImportCandidateRow: View {
         }
         let missing = candidate.missingHoldCount == 1 ? "1 missing/changed hold" : "\(candidate.missingHoldCount) missing/changed holds"
         return "\(candidate.matchedHoldCount)/\(candidate.totalHoldCount) holds matched, \(missing)"
+    }
+}
+
+private struct BoulderImportCompareEditSheet: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+
+    let wallID: UUID
+    let candidate: BoulderImportCandidate
+    let onSave: ([UUID]) -> Void
+
+    @State private var selectedTargetHoldIDs: Set<UUID>
+
+    init(wallID: UUID, candidate: BoulderImportCandidate, onSave: @escaping ([UUID]) -> Void) {
+        self.wallID = wallID
+        self.candidate = candidate
+        self.onSave = onSave
+        _selectedTargetHoldIDs = State(initialValue: Set(candidate.matchedHoldIDs))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let sourceWall,
+                   let targetWall,
+                   let sourceImage = store.image(for: sourceWall),
+                   let targetImage = store.image(for: targetWall) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            header
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                Label("Original problem", systemImage: "1.circle")
+                                    .font(.headline)
+                                WallCanvasView(
+                                    image: sourceImage,
+                                    holds: sourceWall.holds,
+                                    selectedHoldIDs: Set(candidate.sourceBoulder.holdIDs),
+                                    showsInactiveHolds: false,
+                                    onHoldTap: nil,
+                                    onEmptyImageTap: nil,
+                                    isZoomEnabled: true,
+                                    cornerRadius: 10
+                                )
+                            }
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                Label("Current wall", systemImage: "2.circle")
+                                    .font(.headline)
+                                Text("Tap holds to add or remove them from this imported problem.")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+
+                                WallCanvasView(
+                                    image: targetImage,
+                                    holds: targetWall.holds,
+                                    selectedHoldIDs: selectedTargetHoldIDs,
+                                    showsInactiveHolds: true,
+                                    onHoldTap: { hold in
+                                        toggle(hold)
+                                    },
+                                    onEmptyImageTap: nil,
+                                    isZoomEnabled: true,
+                                    cornerRadius: 10
+                                )
+                            }
+
+                            HStack(spacing: 10) {
+                                Button {
+                                    selectedTargetHoldIDs = Set(candidate.matchedHoldIDs)
+                                } label: {
+                                    Label("Reset Auto", systemImage: "arrow.counterclockwise")
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button(role: .destructive) {
+                                    selectedTargetHoldIDs = []
+                                } label: {
+                                    Label("Clear", systemImage: "xmark.circle")
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        }
+                        .padding()
+                    }
+                } else {
+                    ContentUnavailableView(
+                        "Walls Not Available",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text("Could not load one of the wall images for comparison.")
+                    )
+                }
+            }
+            .navigationTitle("Compare & Edit")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Use \(selectedTargetHoldIDs.count)") {
+                        onSave(Array(selectedTargetHoldIDs))
+                        dismiss()
+                    }
+                    .disabled(selectedTargetHoldIDs.isEmpty)
+                }
+            }
+        }
+        .sessionTimerOverlay()
+    }
+
+    private var sourceWall: Wall? {
+        store.wall(withID: candidate.sourceWallID)
+    }
+
+    private var targetWall: Wall? {
+        store.wall(withID: wallID)
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(candidate.sourceBoulder.name)
+                    .font(.title3.weight(.semibold))
+                Text(candidate.sourceBoulder.grade)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(.secondary.opacity(0.18), in: Capsule())
+            }
+
+            Text("\(selectedTargetHoldIDs.count)/\(candidate.totalHoldCount) holds selected for import")
+                .font(.subheadline)
+                .foregroundStyle(selectedTargetHoldIDs.count >= candidate.totalHoldCount ? .green : .orange)
+        }
+    }
+
+    private func toggle(_ hold: Hold) {
+        if selectedTargetHoldIDs.contains(hold.id) {
+            selectedTargetHoldIDs.remove(hold.id)
+        } else {
+            selectedTargetHoldIDs.insert(hold.id)
+        }
     }
 }
 
