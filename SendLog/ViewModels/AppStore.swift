@@ -80,6 +80,180 @@ private struct HoldGeometryTransform {
     }
 }
 
+private struct HoldColorDescriptor {
+    let hue: CGFloat
+    let saturation: CGFloat
+    let brightness: CGFloat
+    let relativeSaturation: CGFloat
+    let relativeBrightness: CGFloat
+    let confidence: CGFloat
+}
+
+private struct HoldColorSampler {
+    private struct AverageColor {
+        let red: CGFloat
+        let green: CGFloat
+        let blue: CGFloat
+    }
+
+    private let width: Int
+    private let height: Int
+    private let bytes: [UInt8]
+
+    init?(image: UIImage) {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+
+        let size = image.size
+        guard size.width >= 1, size.height >= 1 else {
+            return nil
+        }
+
+        let renderedImage = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
+        guard let cgImage = renderedImage.cgImage else {
+            return nil
+        }
+
+        let renderedWidth = cgImage.width
+        let renderedHeight = cgImage.height
+        var renderedBytes = [UInt8](repeating: 0, count: renderedWidth * renderedHeight * 4)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let didRender = renderedBytes.withUnsafeMutableBytes { pointer -> Bool in
+            guard let baseAddress = pointer.baseAddress,
+                  let context = CGContext(
+                    data: baseAddress,
+                    width: renderedWidth,
+                    height: renderedHeight,
+                    bitsPerComponent: 8,
+                    bytesPerRow: renderedWidth * 4,
+                    space: colorSpace,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                  ) else {
+                return false
+            }
+            context.interpolationQuality = .medium
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: renderedWidth, height: renderedHeight))
+            return true
+        }
+        guard didRender else {
+            return nil
+        }
+        width = renderedWidth
+        height = renderedHeight
+        bytes = renderedBytes
+    }
+
+    func descriptor(for rect: NormalizedRect) -> HoldColorDescriptor? {
+        let holdRect = rect.scaledAroundCenter(x: 0.58, y: 0.58).clamped().cgRect
+        let exclusionRect = rect.scaledAroundCenter(x: 1.15, y: 1.15).clamped().cgRect
+        let backgroundRect = rect.scaledAroundCenter(x: 2.25, y: 2.25).clamped().cgRect
+
+        guard let holdColor = averageColor(in: holdRect, gridSize: 7) else {
+            return nil
+        }
+
+        let backgroundColor = averageColor(in: backgroundRect, excluding: exclusionRect, gridSize: 9)
+        let holdHSV = hsv(for: holdColor)
+        let backgroundHSV = backgroundColor.map { hsv(for: $0) }
+        let relativeSaturation = holdHSV.saturation - (backgroundHSV?.saturation ?? holdHSV.saturation)
+        let relativeBrightness = holdHSV.brightness - (backgroundHSV?.brightness ?? holdHSV.brightness)
+        let confidence = min(
+            1,
+            max(
+                holdHSV.saturation * 1.4,
+                abs(relativeSaturation) * 1.3,
+                abs(relativeBrightness) * 1.6
+            )
+        )
+
+        return HoldColorDescriptor(
+            hue: holdHSV.hue,
+            saturation: holdHSV.saturation,
+            brightness: holdHSV.brightness,
+            relativeSaturation: relativeSaturation,
+            relativeBrightness: relativeBrightness,
+            confidence: confidence
+        )
+    }
+
+    private func averageColor(
+        in normalizedRect: CGRect,
+        excluding excludedRect: CGRect? = nil,
+        gridSize: Int
+    ) -> AverageColor? {
+        let rect = pixelRect(for: normalizedRect)
+        guard rect.width > 0, rect.height > 0 else {
+            return nil
+        }
+
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var count: CGFloat = 0
+        let steps = max(1, gridSize)
+
+        for yIndex in 0..<steps {
+            for xIndex in 0..<steps {
+                let normalizedX = normalizedRect.minX + ((CGFloat(xIndex) + 0.5) / CGFloat(steps) * normalizedRect.width)
+                let normalizedY = normalizedRect.minY + ((CGFloat(yIndex) + 0.5) / CGFloat(steps) * normalizedRect.height)
+                if let excludedRect, excludedRect.contains(CGPoint(x: normalizedX, y: normalizedY)) {
+                    continue
+                }
+
+                let x = min(max(Int(normalizedX * CGFloat(width)), 0), width - 1)
+                let y = min(max(Int(normalizedY * CGFloat(height)), 0), height - 1)
+                let offset = ((y * width) + x) * 4
+                red += CGFloat(bytes[offset]) / 255
+                green += CGFloat(bytes[offset + 1]) / 255
+                blue += CGFloat(bytes[offset + 2]) / 255
+                count += 1
+            }
+        }
+
+        guard count > 0 else {
+            return nil
+        }
+        return AverageColor(red: red / count, green: green / count, blue: blue / count)
+    }
+
+    private func pixelRect(for normalizedRect: CGRect) -> CGRect {
+        let x = min(max(normalizedRect.minX, 0), 1)
+        let y = min(max(normalizedRect.minY, 0), 1)
+        let maxX = min(max(normalizedRect.maxX, x), 1)
+        let maxY = min(max(normalizedRect.maxY, y), 1)
+        return CGRect(
+            x: x * CGFloat(width),
+            y: y * CGFloat(height),
+            width: (maxX - x) * CGFloat(width),
+            height: (maxY - y) * CGFloat(height)
+        )
+    }
+
+    private func hsv(for color: AverageColor) -> (hue: CGFloat, saturation: CGFloat, brightness: CGFloat) {
+        let maxValue = max(color.red, color.green, color.blue)
+        let minValue = min(color.red, color.green, color.blue)
+        let delta = maxValue - minValue
+        let brightness = maxValue
+        let saturation = maxValue == 0 ? 0 : delta / maxValue
+
+        let hue: CGFloat
+        if delta == 0 {
+            hue = 0
+        } else if maxValue == color.red {
+            hue = (((color.green - color.blue) / delta).truncatingRemainder(dividingBy: 6)) / 6
+        } else if maxValue == color.green {
+            hue = (((color.blue - color.red) / delta) + 2) / 6
+        } else {
+            hue = (((color.red - color.green) / delta) + 4) / 6
+        }
+
+        return (hue < 0 ? hue + 1 : hue, saturation, brightness)
+    }
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     enum AppStoreError: LocalizedError {
@@ -158,6 +332,7 @@ final class AppStore: ObservableObject {
     private let holdDetector: OfflineHoldDetectionService
     private let userDefaults: UserDefaults
     private let imageCache = NSCache<NSString, UIImage>()
+    private var holdColorDescriptorCache: [String: [UUID: HoldColorDescriptor]] = [:]
     private let sessionLogsKey = "sessionLogs"
     private var sessionStartedAt: Date?
     private var sessionAttemptCount = 0
@@ -297,7 +472,34 @@ final class AppStore: ObservableObject {
         try await persist()
     }
 
-    func detectHolds(for wallID: UUID) async throws {
+    func updateWallArea(wallID: UUID, points: [NormalizedPoint]) async throws {
+        guard let index = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+
+        let cleaned = points
+            .map { $0.clamped() }
+            .removingAdjacentDuplicates(minDistance: 0.002)
+        guard cleaned.count >= 3 else {
+            return
+        }
+
+        walls[index].wallEdges = [cleaned]
+        walls[index].holds = holdsInsideWallArea(walls[index].holds, wallEdges: walls[index].wallEdges)
+        walls[index].updatedAt = Date()
+        try await persist()
+    }
+
+    func clearWallArea(wallID: UUID) async throws {
+        guard let index = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+        walls[index].wallEdges = []
+        walls[index].updatedAt = Date()
+        try await persist()
+    }
+
+    func detectHolds(for wallID: UUID, targetCount: Int? = nil) async throws {
         guard let index = wallIndex(for: wallID) else {
             throw AppStoreError.wallNotFound
         }
@@ -305,14 +507,23 @@ final class AppStore: ObservableObject {
             throw AppStoreError.missingWallImage
         }
 
-        let detected = try await holdDetector.detectHolds(in: image)
-        guard !detected.isEmpty else {
+        let requestedTargetCount = targetCount ?? nextHoldDetectionTargetCount(currentHoldCount: walls[index].holds.count)
+        let detectedHolds = try await holdDetector.detectHolds(in: image, targetCount: requestedTargetCount)
+        let filteredHolds = holdsInsideWallArea(detectedHolds, wallEdges: walls[index].wallEdges)
+        guard !filteredHolds.isEmpty else {
             throw AppStoreError.noHoldsDetected
         }
 
-        walls[index].holds = detected
+        walls[index].holds = filteredHolds
         walls[index].updatedAt = Date()
         try await persist()
+    }
+
+    private func nextHoldDetectionTargetCount(currentHoldCount: Int) -> Int {
+        guard currentHoldCount > 0 else {
+            return 92
+        }
+        return min(180, max(92, currentHoldCount + 24))
     }
 
     func removeLastManualHold(wallID: UUID) async throws {
@@ -515,17 +726,21 @@ final class AppStore: ObservableObject {
         }
 
         let existingSignatures = Set(targetWall.boulders.map { boulderSignature(for: $0, holdIDs: $0.holdIDs) })
+        let targetColorDescriptors = colorDescriptors(for: targetWall)
         return walls
             .filter { $0.id != wallID }
             .flatMap { sourceWall in
                 let transform = bestGeometryTransform(from: sourceWall.holds, to: targetWall.holds)
+                let sourceColorDescriptors = colorDescriptors(for: sourceWall)
                 return sourceWall.boulders.compactMap { boulder in
                     importCandidate(
                         from: boulder,
                         sourceWall: sourceWall,
                         targetWall: targetWall,
                         existingSignatures: existingSignatures,
-                        transform: transform
+                        transform: transform,
+                        sourceColorDescriptors: sourceColorDescriptors,
+                        targetColorDescriptors: targetColorDescriptors
                     )
                 }
             }
@@ -752,7 +967,9 @@ final class AppStore: ObservableObject {
         sourceWall: Wall,
         targetWall: Wall,
         existingSignatures: Set<String>,
-        transform: HoldGeometryTransform
+        transform: HoldGeometryTransform,
+        sourceColorDescriptors: [UUID: HoldColorDescriptor],
+        targetColorDescriptors: [UUID: HoldColorDescriptor]
     ) -> BoulderImportCandidate? {
         let sourceHoldsByID = Dictionary(uniqueKeysWithValues: sourceWall.holds.map { ($0.id, $0) })
         var usedTargetHoldIDs = Set<UUID>()
@@ -765,7 +982,9 @@ final class AppStore: ObservableObject {
                     for: sourceHold,
                     transform: transform,
                     in: targetWall.holds,
-                    excluding: usedTargetHoldIDs
+                    excluding: usedTargetHoldIDs,
+                    sourceColorDescriptor: sourceColorDescriptors[sourceHold.id],
+                    targetColorDescriptors: targetColorDescriptors
                   ) else {
                 missingHoldCount += 1
                 continue
@@ -800,14 +1019,25 @@ final class AppStore: ObservableObject {
         for sourceHold: Hold,
         transform: HoldGeometryTransform,
         in targetHolds: [Hold],
-        excluding usedIDs: Set<UUID>
+        excluding usedIDs: Set<UUID>,
+        sourceColorDescriptor: HoldColorDescriptor?,
+        targetColorDescriptors: [UUID: HoldColorDescriptor]
     ) -> Hold? {
         let transformedRect = transform.applying(to: sourceHold.rect)
         return targetHolds
             .filter { !usedIDs.contains($0.id) }
             .compactMap { targetHold -> (hold: Hold, score: CGFloat)? in
-                let score = holdMatchScore(transformedRect, targetHold.rect)
-                guard score >= 0.38 else {
+                let geometryScore = holdMatchScore(transformedRect, targetHold.rect)
+                guard geometryScore >= 0.30 else {
+                    return nil
+                }
+
+                let colorScore = holdColorMatchScore(
+                    sourceColorDescriptor,
+                    targetColorDescriptors[targetHold.id]
+                )
+                let score = (geometryScore * 0.72) + (colorScore * 0.28)
+                guard score >= 0.43 else {
                     return nil
                 }
                 return (targetHold, score)
@@ -1038,6 +1268,74 @@ final class AppStore: ObservableObject {
         return max(distanceScore, overlapScore)
     }
 
+    private func colorDescriptors(for wall: Wall) -> [UUID: HoldColorDescriptor] {
+        let cacheKey = [
+            wall.id.uuidString,
+            wall.imageFilename,
+            "\(wall.updatedAt.timeIntervalSinceReferenceDate)",
+            "\(wall.holds.hashValue)"
+        ].joined(separator: "|")
+
+        if let cached = holdColorDescriptorCache[cacheKey] {
+            return cached
+        }
+
+        guard let image = image(for: wall), let sampler = HoldColorSampler(image: image) else {
+            return [:]
+        }
+
+        let descriptors: [UUID: HoldColorDescriptor] = Dictionary(uniqueKeysWithValues: wall.holds.compactMap { hold -> (UUID, HoldColorDescriptor)? in
+            guard let descriptor = sampler.descriptor(for: hold.rect) else {
+                return nil
+            }
+            return (hold.id, descriptor)
+        })
+        holdColorDescriptorCache[cacheKey] = descriptors
+        return descriptors
+    }
+
+    private func holdColorMatchScore(
+        _ sourceDescriptor: HoldColorDescriptor?,
+        _ targetDescriptor: HoldColorDescriptor?
+    ) -> CGFloat {
+        guard let sourceDescriptor, let targetDescriptor else {
+            return 0.62
+        }
+
+        let confidence = min(sourceDescriptor.confidence, targetDescriptor.confidence)
+        guard confidence > 0.08 else {
+            return 0.62
+        }
+
+        let hueDistance = circularDistance(sourceDescriptor.hue, targetDescriptor.hue)
+        let hueScore = 1 - min(hueDistance / 0.5, 1)
+        let saturationScore = 1 - min(abs(sourceDescriptor.relativeSaturation - targetDescriptor.relativeSaturation) / 0.75, 1)
+        let relativeBrightnessScore = 1 - min(abs(sourceDescriptor.relativeBrightness - targetDescriptor.relativeBrightness) / 0.85, 1)
+        let brightnessScore = 1 - min(abs(sourceDescriptor.brightness - targetDescriptor.brightness) / 0.95, 1)
+
+        let colorfulWeight = min(sourceDescriptor.saturation, targetDescriptor.saturation)
+        let rawScore: CGFloat
+        if colorfulWeight > 0.16 {
+            rawScore = (hueScore * 0.45)
+                + (saturationScore * 0.25)
+                + (relativeBrightnessScore * 0.20)
+                + (brightnessScore * 0.10)
+        } else {
+            rawScore = (hueScore * 0.12)
+                + (saturationScore * 0.34)
+                + (relativeBrightnessScore * 0.39)
+                + (brightnessScore * 0.15)
+        }
+
+        // Low-confidence descriptors are pulled toward neutral so lighting changes do not dominate geometry.
+        return (rawScore * confidence) + (0.62 * (1 - confidence))
+    }
+
+    private func circularDistance(_ lhs: CGFloat, _ rhs: CGFloat) -> CGFloat {
+        let distance = abs(lhs - rhs).truncatingRemainder(dividingBy: 1)
+        return min(distance, 1 - distance)
+    }
+
     private func boulderSignature(for boulder: Boulder, holdIDs: [UUID]) -> String {
         [
             boulder.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
@@ -1100,6 +1398,84 @@ final class AppStore: ObservableObject {
         existingHolds.reversed().first { hold in
             hold.rect.cgRect.insetBy(dx: -0.004, dy: -0.004).contains(point)
         }
+    }
+
+    private func holdsInsideWallArea(_ holds: [Hold], wallEdges: [[NormalizedPoint]]) -> [Hold] {
+        let polygons = wallEdges.filter { $0.count >= 3 }
+        guard !polygons.isEmpty else {
+            return holds
+        }
+
+        return holds.filter { hold in
+            polygons.contains { holdIsInsideWallArea(hold, polygon: $0, margin: 0.018) }
+        }
+    }
+
+    private func holdIsInsideWallArea(_ hold: Hold, polygon: [NormalizedPoint], margin: CGFloat) -> Bool {
+        let rect = hold.rect.cgRect
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+
+        if polygonContains(center, polygon: polygon) {
+            return true
+        }
+
+        return distanceFromPolygonEdge(to: center, polygon: polygon) <= margin
+    }
+
+    private func polygonContains(_ point: CGPoint, polygon: [NormalizedPoint]) -> Bool {
+        guard polygon.count >= 3 else {
+            return false
+        }
+
+        var isInside = false
+        var previous = polygon[polygon.count - 1].cgPoint
+
+        for vertex in polygon {
+            let current = vertex.cgPoint
+            let yCrosses = (current.y > point.y) != (previous.y > point.y)
+            if yCrosses {
+                let denominator = previous.y - current.y
+                let safeDenominator = abs(denominator) < 0.000001 ? 0.000001 : denominator
+                let xAtY = (previous.x - current.x) * (point.y - current.y) / safeDenominator + current.x
+                if point.x < xAtY {
+                    isInside.toggle()
+                }
+            }
+            previous = current
+        }
+
+        return isInside
+    }
+
+    private func distanceFromPolygonEdge(to point: CGPoint, polygon: [NormalizedPoint]) -> CGFloat {
+        guard polygon.count >= 2 else {
+            return .greatestFiniteMagnitude
+        }
+
+        var bestDistance = CGFloat.greatestFiniteMagnitude
+        for index in polygon.indices {
+            let start = polygon[index].cgPoint
+            let end = polygon[(index + 1) % polygon.count].cgPoint
+            bestDistance = min(bestDistance, distanceFromLineSegment(point, start: start, end: end))
+        }
+        return bestDistance
+    }
+
+    private func distanceFromLineSegment(_ point: CGPoint, start: CGPoint, end: CGPoint) -> CGFloat {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let lengthSquared = (dx * dx) + (dy * dy)
+        guard lengthSquared > 0 else {
+            return hypot(point.x - start.x, point.y - start.y)
+        }
+
+        let projection = ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared
+        let clampedProjection = min(max(projection, 0), 1)
+        let closest = CGPoint(
+            x: start.x + (clampedProjection * dx),
+            y: start.y + (clampedProjection * dy)
+        )
+        return hypot(point.x - closest.x, point.y - closest.y)
     }
 
     private func movedHold(_ hold: Hold, to normalizedCenter: CGPoint) -> Hold {
@@ -1249,5 +1625,21 @@ final class AppStore: ObservableObject {
         }
 
         return walls[wallIndex].boulders[boulderIndex].logEntries.remove(at: logIndex)
+    }
+}
+
+private extension Array where Element == NormalizedPoint {
+    func removingAdjacentDuplicates(minDistance: CGFloat) -> [NormalizedPoint] {
+        reduce(into: []) { result, point in
+            guard let last = result.last else {
+                result.append(point)
+                return
+            }
+
+            let distance = hypot(last.x - point.x, last.y - point.y)
+            if distance >= minDistance {
+                result.append(point)
+            }
+        }
     }
 }

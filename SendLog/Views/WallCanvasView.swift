@@ -8,6 +8,8 @@ struct WallCanvasView: View {
     let image: UIImage
     let holds: [Hold]
     let selectedHoldIDs: Set<UUID>
+    var wallEdges: [[NormalizedPoint]] = []
+    var draftWallArea: [NormalizedPoint] = []
     var secondarySelectedHoldIDs: Set<UUID> = []
     var showsInactiveHolds = true
     var editableHoldID: UUID? = nil
@@ -18,6 +20,7 @@ struct WallCanvasView: View {
     var onEmptyImageDoubleTap: ((CGPoint) -> Void)? = nil
     var onHoldDragEnd: ((Hold, CGPoint) -> Void)? = nil
     var onHoldResizeEnd: ((Hold, NormalizedRect) -> Void)? = nil
+    var onWallAreaTap: ((CGPoint) -> Void)? = nil
     var onContourComplete: (([CGPoint]) -> Void)?
     var onContourUndo: (() -> Void)? = nil
     var contourUndoRequestID: Int = 0
@@ -61,6 +64,9 @@ struct WallCanvasView: View {
                         .position(x: imageFrame.midX, y: imageFrame.midY)
 
                     Canvas { context, _ in
+                        drawWallEdges(in: &context, imageFrame: imageFrame)
+                        drawDraftWallArea(in: &context, imageFrame: imageFrame)
+
                         for hold in holds {
                             let rendered = renderedHold(for: hold)
                             let isPrimarySelected = selectedHoldIDs.contains(hold.id)
@@ -291,7 +297,7 @@ struct WallCanvasView: View {
     }
 
     private var hasTapHandlers: Bool {
-        onHoldTap != nil || onEmptyImageTap != nil || onHoldDoubleTap != nil || onEmptyImageDoubleTap != nil || onHoldDelete != nil
+        onHoldTap != nil || onEmptyImageTap != nil || onHoldDoubleTap != nil || onEmptyImageDoubleTap != nil || onHoldDelete != nil || onWallAreaTap != nil
     }
 
     private var hasEditableHoldDrag: Bool {
@@ -350,6 +356,11 @@ struct WallCanvasView: View {
         }
 
         let normalizedPoint = normalizedPoint(from: unscaledLocation, in: imageFrame)
+
+        if !isDoubleTap, let onWallAreaTap {
+            onWallAreaTap(normalizedPoint)
+            return
+        }
 
         if !isDoubleTap, editableHold != nil, onEmptyImageTap != nil {
             onEmptyImageTap?(normalizedPoint)
@@ -788,6 +799,70 @@ struct WallCanvasView: View {
             )
             let coreOpacity = min(1.0, 0.95 * clampedBoost)
             layerContext.fill(Path(ellipseIn: coreRect), with: .color(color.opacity(coreOpacity)))
+        }
+    }
+
+    private func drawWallEdges(in context: inout GraphicsContext, imageFrame: CGRect) {
+        guard !wallEdges.isEmpty else {
+            return
+        }
+
+        for edge in wallEdges where edge.count >= 2 {
+            var path = Path()
+            let first = edge[0].toCGPoint(in: imageFrame)
+            path.move(to: first)
+            for point in edge.dropFirst() {
+                path.addLine(to: point.toCGPoint(in: imageFrame))
+            }
+            if edge.count >= 3 {
+                path.closeSubpath()
+            }
+
+            context.drawLayer { layerContext in
+                layerContext.addFilter(.shadow(color: .cyan.opacity(0.95), radius: 8, x: 0, y: 0))
+                layerContext.stroke(path, with: .color(.cyan.opacity(0.70)), lineWidth: 3.0)
+            }
+            if edge.count >= 3 {
+                context.fill(path, with: .color(.cyan.opacity(0.08)))
+            }
+            context.stroke(path, with: .color(.white.opacity(0.82)), lineWidth: 1.05)
+            context.stroke(path, with: .color(.green.opacity(0.55)), lineWidth: 0.75)
+        }
+    }
+
+    private func drawDraftWallArea(in context: inout GraphicsContext, imageFrame: CGRect) {
+        guard !draftWallArea.isEmpty else {
+            return
+        }
+
+        if draftWallArea.count >= 2 {
+            var path = Path()
+            let first = draftWallArea[0].toCGPoint(in: imageFrame)
+            path.move(to: first)
+            for point in draftWallArea.dropFirst() {
+                path.addLine(to: point.toCGPoint(in: imageFrame))
+            }
+
+            context.drawLayer { layerContext in
+                layerContext.addFilter(.shadow(color: .mint.opacity(0.95), radius: 7, x: 0, y: 0))
+                layerContext.stroke(path, with: .color(.mint.opacity(0.82)), style: StrokeStyle(lineWidth: 2.6, dash: [8, 5]))
+            }
+        }
+
+        for (index, point) in draftWallArea.enumerated() {
+            let center = point.toCGPoint(in: imageFrame)
+            let markerRect = CGRect(x: center.x - 9, y: center.y - 9, width: 18, height: 18)
+            context.drawLayer { layerContext in
+                layerContext.addFilter(.shadow(color: .mint.opacity(0.9), radius: 5, x: 0, y: 0))
+                layerContext.fill(Path(ellipseIn: markerRect), with: .color(.mint.opacity(0.95)))
+            }
+            context.draw(
+                Text("\(index + 1)")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.black),
+                at: center,
+                anchor: .center
+            )
         }
     }
 

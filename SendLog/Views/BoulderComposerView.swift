@@ -44,6 +44,7 @@ struct BoulderComposerView: View {
                                 image: image,
                                 holds: wall.holds,
                                 selectedHoldIDs: primarySelectedHoldIDs,
+                                wallEdges: wall.wallEdges,
                                 secondarySelectedHoldIDs: secondarySelectedHoldIDs,
                                 showsInactiveHolds: false,
                                 onHoldTap: { hold in

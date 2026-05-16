@@ -3,6 +3,11 @@ import CoreML
 import UIKit
 
 struct OfflineHoldDetectionService {
+    struct DetectionResult {
+        let holds: [Hold]
+        let wallEdges: [[NormalizedPoint]]
+    }
+
     enum DetectionError: LocalizedError {
         case modelNotFound
         case imagePreparationFailed
@@ -74,9 +79,47 @@ struct OfflineHoldDetectionService {
         var maxDimension: CGFloat
     }
 
+    private struct InputGeometry {
+        let imageRect: CGRect
+
+        func modelPoint(fromNormalizedPoint point: CGPoint) -> CGPoint {
+            CGPoint(
+                x: imageRect.minX + (point.x * imageRect.width),
+                y: imageRect.minY + (point.y * imageRect.height)
+            )
+        }
+
+        func normalizedRect(fromModelRect modelRect: CGRect) -> NormalizedRect? {
+            let displayRect = CGRect(
+                x: modelRect.minX,
+                y: CGFloat(inputSize) - modelRect.maxY,
+                width: modelRect.width,
+                height: modelRect.height
+            ).intersection(imageRect)
+            guard !displayRect.isNull, displayRect.width > 0, displayRect.height > 0 else {
+                return nil
+            }
+
+            return NormalizedRect(
+                x: (displayRect.minX - imageRect.minX) / imageRect.width,
+                y: (displayRect.minY - imageRect.minY) / imageRect.height,
+                width: displayRect.width / imageRect.width,
+                height: displayRect.height / imageRect.height
+            ).clamped()
+        }
+    }
+
     func detectHolds(in image: UIImage, targetCount: Int = 92) async throws -> [Hold] {
         try await Task.detached(priority: .userInitiated) {
             try Self.detectHoldsSynchronously(in: image, targetCount: targetCount)
+        }.value
+    }
+
+    func detectHoldsAndWallEdges(in image: UIImage, targetCount: Int = 92) async throws -> DetectionResult {
+        try await Task.detached(priority: .userInitiated) {
+            let holds = try Self.detectHoldsSynchronously(in: image, targetCount: targetCount)
+            let wallEdges = Self.estimatedWallEdges(from: holds)
+            return DetectionResult(holds: holds, wallEdges: wallEdges)
         }.value
     }
 
@@ -87,10 +130,11 @@ struct OfflineHoldDetectionService {
     }
 
     private static func detectHoldsSynchronously(in image: UIImage, targetCount: Int) throws -> [Hold] {
-        let candidates = try candidatesSynchronously(in: image)
+        let geometry = inputGeometry(for: image, size: inputSize)
+        let candidates = try candidatesSynchronously(in: image, geometry: geometry)
         let selected = selectCandidates(candidates, targetCount: targetCount)
-        return selected.map { candidate in
-            hold(from: candidate)
+        return selected.compactMap { candidate in
+            hold(from: candidate, geometry: geometry)
         }
     }
 
@@ -99,19 +143,118 @@ struct OfflineHoldDetectionService {
             x: min(max(0, normalizedPoint.x), 1),
             y: min(max(0, normalizedPoint.y), 1)
         )
-        let displayPoint = CGPoint(
-            x: point.x * CGFloat(inputSize),
-            y: point.y * CGFloat(inputSize)
-        )
-        let candidates = try candidatesSynchronously(in: image)
+        let geometry = inputGeometry(for: image, size: inputSize)
+        let displayPoint = geometry.modelPoint(fromNormalizedPoint: point)
+        let candidates = try candidatesSynchronously(in: image, geometry: geometry)
         guard let candidate = candidate(atDisplayPoint: displayPoint, in: candidates) else {
             return nil
         }
-        return hold(from: candidate)
+        return hold(from: candidate, geometry: geometry)
     }
 
-    private static func candidatesSynchronously(in image: UIImage) throws -> [Candidate] {
-        guard let pixelBuffer = pixelBuffer(from: image, size: inputSize) else {
+    private static func estimatedWallEdges(from holds: [Hold]) -> [[NormalizedPoint]] {
+        guard holds.count >= 6 else {
+            return []
+        }
+
+        let sortedByY = holds.sorted { $0.rect.y < $1.rect.y }
+        let top = max(0, percentile(sortedByY.map { $0.rect.cgRect.minY }, 0.03) - 0.075)
+        let bottom = min(1, percentile(sortedByY.map { $0.rect.cgRect.maxY }, 0.97) + 0.075)
+        guard bottom - top > 0.18 else {
+            return []
+        }
+
+        let binCount = 9
+        let binHeight = (bottom - top) / CGFloat(binCount)
+        var leftPoints: [CGPoint] = []
+        var rightPoints: [CGPoint] = []
+
+        for index in 0...binCount {
+            let y = top + (CGFloat(index) * binHeight)
+            let bandHalfHeight = max(binHeight * 0.85, 0.10)
+            let localHolds = holds.filter { hold in
+                let centerY = hold.rect.y + (hold.rect.height / 2)
+                return abs(centerY - y) <= bandHalfHeight
+            }
+
+            guard localHolds.count >= 2 else {
+                continue
+            }
+
+            let leftValues = localHolds.map { $0.rect.cgRect.minX }.sorted()
+            let rightValues = localHolds.map { $0.rect.cgRect.maxX }.sorted()
+            let localWidths = localHolds.map(\.rect.width).sorted()
+            let margin = max(0.035, min(0.11, percentile(localWidths, 0.70) * 1.9))
+            let leftX = max(0, percentile(leftValues, 0.04) - margin)
+            let rightX = min(1, percentile(rightValues, 0.96) + margin)
+
+            if rightX - leftX > 0.20 {
+                leftPoints.append(CGPoint(x: leftX, y: y))
+                rightPoints.append(CGPoint(x: rightX, y: y))
+            }
+        }
+
+        guard leftPoints.count >= 3, rightPoints.count >= 3 else {
+            return []
+        }
+
+        let smoothedLeft = smoothedBoundary(leftPoints)
+        let smoothedRight = smoothedBoundary(rightPoints)
+        guard let firstLeft = smoothedLeft.first,
+              let lastLeft = smoothedLeft.last,
+              let firstRight = smoothedRight.first,
+              let lastRight = smoothedRight.last else {
+            return []
+        }
+
+        let topEdge = [
+            NormalizedPoint(x: firstLeft.x, y: firstLeft.y).clamped(),
+            NormalizedPoint(x: firstRight.x, y: firstRight.y).clamped()
+        ]
+        let rightEdge = smoothedRight.map { NormalizedPoint(x: $0.x, y: $0.y).clamped() }
+        let bottomEdge = [
+            NormalizedPoint(x: lastRight.x, y: lastRight.y).clamped(),
+            NormalizedPoint(x: lastLeft.x, y: lastLeft.y).clamped()
+        ]
+        let leftEdge = smoothedLeft.reversed().map { NormalizedPoint(x: $0.x, y: $0.y).clamped() }
+
+        return [topEdge, rightEdge, bottomEdge, leftEdge]
+    }
+
+    private static func smoothedBoundary(_ points: [CGPoint]) -> [CGPoint] {
+        guard points.count >= 3 else {
+            return points
+        }
+
+        return points.enumerated().map { index, point in
+            let lower = max(0, index - 1)
+            let upper = min(points.count - 1, index + 1)
+            let neighbors = points[lower...upper]
+            let averageX = neighbors.map(\.x).reduce(0, +) / CGFloat(neighbors.count)
+            return CGPoint(x: (point.x * 0.55) + (averageX * 0.45), y: point.y)
+        }
+    }
+
+    private static func percentile(_ sortedValues: [CGFloat], _ percentile: CGFloat) -> CGFloat {
+        guard !sortedValues.isEmpty else {
+            return 0
+        }
+
+        let sorted = sortedValues.sorted()
+        let clamped = min(max(0, percentile), 1)
+        let rawIndex = clamped * CGFloat(sorted.count - 1)
+        let lowerIndex = Int(floor(rawIndex))
+        let upperIndex = Int(ceil(rawIndex))
+        guard lowerIndex != upperIndex else {
+            return sorted[lowerIndex]
+        }
+
+        let fraction = rawIndex - CGFloat(lowerIndex)
+        return sorted[lowerIndex] + ((sorted[upperIndex] - sorted[lowerIndex]) * fraction)
+    }
+
+    private static func candidatesSynchronously(in image: UIImage, geometry: InputGeometry) throws -> [Candidate] {
+        guard let pixelBuffer = pixelBuffer(from: image, size: inputSize, imageRect: geometry.imageRect) else {
             throw DetectionError.imagePreparationFailed
         }
         guard let scoreMap = scoreMap(from: image) else {
@@ -148,7 +291,11 @@ struct OfflineHoldDetectionService {
         return try MLModel(contentsOf: url, configuration: configuration)
     }
 
-    private static func pixelBuffer(from image: UIImage, size: Int) -> CVPixelBuffer? {
+    private static func inputGeometry(for image: UIImage, size: Int) -> InputGeometry {
+        InputGeometry(imageRect: CGRect(x: 0, y: 0, width: size, height: size))
+    }
+
+    private static func pixelBuffer(from image: UIImage, size: Int, imageRect: CGRect) -> CVPixelBuffer? {
         let attributes: [CFString: Any] = [
             kCVPixelBufferCGImageCompatibilityKey: true,
             kCVPixelBufferCGBitmapContextCompatibilityKey: true
@@ -183,14 +330,23 @@ struct OfflineHoldDetectionService {
         }
 
         context.interpolationQuality = .high
+        context.setFillColor(UIColor.black.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: size, height: size))
         UIGraphicsPushContext(context)
-        image.draw(in: CGRect(x: 0, y: 0, width: size, height: size))
+        image.draw(in: imageRect)
         UIGraphicsPopContext()
         return pixelBuffer
     }
 
     private static func scoreMap(from image: UIImage) -> ScoreMap? {
-        guard let pixels = rgbaPixels(from: image, size: protoSize) else {
+        let inputImageRect = inputGeometry(for: image, size: inputSize).imageRect
+        let protoImageRect = CGRect(
+            x: inputImageRect.minX / CGFloat(inputSize) * CGFloat(protoSize),
+            y: inputImageRect.minY / CGFloat(inputSize) * CGFloat(protoSize),
+            width: inputImageRect.width / CGFloat(inputSize) * CGFloat(protoSize),
+            height: inputImageRect.height / CGFloat(inputSize) * CGFloat(protoSize)
+        )
+        guard let pixels = rgbaPixels(from: image, size: protoSize, imageRect: protoImageRect) else {
             return nil
         }
 
@@ -272,7 +428,7 @@ struct OfflineHoldDetectionService {
         return ScoreMap(scores: scores, wallMask: wallMask, wallArea: wallArea)
     }
 
-    private static func rgbaPixels(from image: UIImage, size: Int) -> [UInt8]? {
+    private static func rgbaPixels(from image: UIImage, size: Int, imageRect: CGRect) -> [UInt8]? {
         var pixels = Array(repeating: UInt8(0), count: size * size * 4)
         let didDraw = pixels.withUnsafeMutableBytes { buffer in
             guard let baseAddress = buffer.baseAddress,
@@ -289,8 +445,10 @@ struct OfflineHoldDetectionService {
             }
 
             context.interpolationQuality = .high
+            context.setFillColor(UIColor.black.cgColor)
+            context.fill(CGRect(x: 0, y: 0, width: size, height: size))
             UIGraphicsPushContext(context)
-            image.draw(in: CGRect(x: 0, y: 0, width: size, height: size))
+            image.draw(in: imageRect)
             UIGraphicsPopContext()
             return true
         }
@@ -535,20 +693,13 @@ struct OfflineHoldDetectionService {
         return distance < sizeLimit
     }
 
-    private static func hold(from candidate: Candidate) -> Hold {
-        let displayRect = CGRect(
-            x: candidate.rect.minX,
-            y: CGFloat(inputSize) - candidate.rect.maxY,
-            width: candidate.rect.width,
-            height: candidate.rect.height
-        )
+    private static func hold(from candidate: Candidate, geometry: InputGeometry) -> Hold? {
+        guard let rect = geometry.normalizedRect(fromModelRect: candidate.rect) else {
+            return nil
+        }
+
         return Hold(
-            rect: NormalizedRect(
-                x: displayRect.minX / CGFloat(inputSize),
-                y: displayRect.minY / CGFloat(inputSize),
-                width: displayRect.width / CGFloat(inputSize),
-                height: displayRect.height / CGFloat(inputSize)
-            ).clamped(),
+            rect: rect,
             contour: nil,
             confidence: Double(candidate.holdScore)
         )

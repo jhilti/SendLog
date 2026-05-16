@@ -11,7 +11,9 @@ struct WallDetailView: View {
     @State private var isDetectingHolds = false
     @State private var isFittingHold = false
     @State private var isEditingHolds = false
+    @State private var isEditingWallArea = false
     @State private var selectedEditableHoldID: UUID?
+    @State private var draftWallAreaPoints: [NormalizedPoint] = []
     @State private var pendingHoldDetectionPoint: CGPoint?
     @State private var isShowingDeleteAllHoldsConfirmation = false
     @State private var isShowingBoulderImport = false
@@ -31,25 +33,30 @@ struct WallDetailView: View {
                                 image: image,
                                 holds: wall.holds,
                                 selectedHoldIDs: [],
-                                showsInactiveHolds: isEditingHolds || !wall.holds.isEmpty,
+                                wallEdges: isEditingWallArea ? [] : wall.wallEdges,
+                                draftWallArea: isEditingWallArea ? draftWallAreaPoints : [],
+                                showsInactiveHolds: isEditingWallArea ? false : (isEditingHolds || !wall.holds.isEmpty),
                                 editableHoldID: selectedEditableHoldID,
-                                onHoldTap: isEditingHolds ? { hold in
+                                onHoldTap: isEditingHolds && !isEditingWallArea ? { hold in
                                     handleEditableHoldTap(hold)
                                 } : nil,
-                                onHoldDelete: isEditingHolds ? { hold in
+                                onHoldDelete: isEditingHolds && !isEditingWallArea ? { hold in
                                     handleHoldTap(hold)
                                 } : nil,
-                                onEmptyImageTap: isEditingHolds && !isFittingHold ? { point in
+                                onEmptyImageTap: isEditingHolds && !isFittingHold && !isEditingWallArea ? { point in
                                     handleEditableImageTap(point)
                                 } : nil,
-                                onEmptyImageDoubleTap: isEditingHolds && !isFittingHold ? { point in
+                                onEmptyImageDoubleTap: isEditingHolds && !isFittingHold && !isEditingWallArea ? { point in
                                     handleEditableImageTap(point)
                                 } : nil,
-                                onHoldDragEnd: isEditingHolds ? { hold, point in
+                                onHoldDragEnd: isEditingHolds && !isEditingWallArea ? { hold, point in
                                     handleEditableHoldMove(hold: hold, to: point)
                                 } : nil,
-                                onHoldResizeEnd: isEditingHolds ? { hold, rect in
+                                onHoldResizeEnd: isEditingHolds && !isEditingWallArea ? { hold, rect in
                                     handleEditableHoldResize(hold: hold, to: rect)
+                                } : nil,
+                                onWallAreaTap: isEditingWallArea ? { point in
+                                    appendWallAreaPoint(point)
                                 } : nil,
                                 isZoomEnabled: true,
                                 isContourDrawEnabled: false,
@@ -190,10 +197,10 @@ struct WallDetailView: View {
                 Button {
                     detectHolds()
                 } label: {
-                    Label(isDetectingHolds ? "Detecting..." : "Detect Holds", systemImage: "sparkles")
+                    Label(holdDetectionButtonTitle(for: wall), systemImage: "sparkles")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(isDetectingHolds || isFittingHold)
+                .disabled(isDetectingHolds || isFittingHold || isEditingWallArea)
 
                 Button(isEditingHolds ? "Done Editing" : "Edit Holds") {
                     withAnimation {
@@ -204,7 +211,60 @@ struct WallDetailView: View {
                     }
                 }
                 .buttonStyle(.bordered)
-                .disabled(isDetectingHolds || isFittingHold)
+                .disabled(isDetectingHolds || isFittingHold || isEditingWallArea)
+            }
+
+            if isEditingWallArea {
+                VStack(alignment: .leading, spacing: 10) {
+                    Button("Save Wall Area") {
+                        saveWallArea()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(draftWallAreaPoints.count < 3)
+
+                    HStack(spacing: 10) {
+                        Button {
+                            undoWallAreaPoint()
+                        } label: {
+                            Label("Undo Point", systemImage: "arrow.uturn.backward")
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(draftWallAreaPoints.isEmpty)
+
+                        Button("Cancel") {
+                            cancelWallAreaEditing()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+            } else {
+                HStack(spacing: 10) {
+                    Button("Set Wall Area") {
+                        startWallAreaEditing(from: wall)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isDetectingHolds || isFittingHold || isEditingHolds)
+
+                    if !wall.wallEdges.isEmpty {
+                        Button(role: .destructive) {
+                            clearWallArea()
+                        } label: {
+                            Label("Clear Wall Area", systemImage: "trash")
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isDetectingHolds || isFittingHold || isEditingHolds)
+                    }
+                }
+            }
+
+            if isEditingWallArea {
+                Text("Tap directly on the wall edge corners in order. Boundary holds get a small detection margin.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else if !wall.wallEdges.isEmpty {
+                Text("Wall area active: hold detection is filtered to the marked polygon.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
 
             if isEditingHolds {
@@ -240,6 +300,9 @@ struct WallDetailView: View {
     }
 
     private func detectHolds() {
+        guard !isEditingWallArea else {
+            return
+        }
         isDetectingHolds = true
         Task {
             do {
@@ -248,6 +311,71 @@ struct WallDetailView: View {
                 errorMessage = error.localizedDescription
             }
             isDetectingHolds = false
+        }
+    }
+
+    private func holdDetectionButtonTitle(for wall: Wall) -> String {
+        if isDetectingHolds {
+            return "Detecting..."
+        }
+        return wall.holds.isEmpty ? "Detect Holds" : "Detect More Holds"
+    }
+
+    private func startWallAreaEditing(from wall: Wall) {
+        withAnimation {
+            isEditingWallArea = true
+            isEditingHolds = false
+            selectedEditableHoldID = nil
+            draftWallAreaPoints = wall.wallEdges.first ?? []
+        }
+    }
+
+    private func cancelWallAreaEditing() {
+        withAnimation {
+            isEditingWallArea = false
+            draftWallAreaPoints = []
+        }
+    }
+
+    private func appendWallAreaPoint(_ point: CGPoint) {
+        let normalized = NormalizedPoint(x: point.x, y: point.y).clamped()
+        draftWallAreaPoints.append(normalized)
+    }
+
+    private func undoWallAreaPoint() {
+        guard !draftWallAreaPoints.isEmpty else {
+            return
+        }
+        draftWallAreaPoints.removeLast()
+    }
+
+    private func saveWallArea() {
+        guard draftWallAreaPoints.count >= 3 else {
+            return
+        }
+
+        Task {
+            do {
+                try await store.updateWallArea(wallID: wallID, points: draftWallAreaPoints)
+                await MainActor.run {
+                    isEditingWallArea = false
+                    draftWallAreaPoints = []
+                }
+            } catch {
+                await MainActor.run {
+                    errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func clearWallArea() {
+        Task {
+            do {
+                try await store.clearWallArea(wallID: wallID)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -446,7 +574,7 @@ private struct BoulderImportSheet: View {
                                     BoulderImportCandidateRow(
                                         candidate: candidate,
                                         isSelected: selectedCandidateIDs.contains(candidate.id),
-                                        showsCompareButton: !candidate.isComplete || editedMatchedHoldIDsByCandidateID[candidate.id] != nil
+                                        showsCompareButton: true
                                     ) {
                                         toggle(candidate)
                                     } onCompare: {
@@ -735,6 +863,7 @@ private struct BoulderImportCompareEditSheet: View {
                                     image: sourceImage,
                                     holds: sourceWall.holds,
                                     selectedHoldIDs: Set(candidate.sourceBoulder.holdIDs),
+                                    wallEdges: sourceWall.wallEdges,
                                     showsInactiveHolds: false,
                                     onHoldTap: nil,
                                     onEmptyImageTap: nil,
@@ -754,6 +883,7 @@ private struct BoulderImportCompareEditSheet: View {
                                     image: targetImage,
                                     holds: targetWall.holds,
                                     selectedHoldIDs: selectedTargetHoldIDs,
+                                    wallEdges: targetWall.wallEdges,
                                     showsInactiveHolds: true,
                                     onHoldTap: { hold in
                                         toggle(hold)
@@ -879,6 +1009,7 @@ struct BoulderPreviewSheet: View {
                                 image: image,
                                 holds: wall.holds,
                                 selectedHoldIDs: Set(boulder.holdIDs),
+                                wallEdges: wall.wallEdges,
                                 showsInactiveHolds: false,
                                 onHoldTap: nil,
                                 onEmptyImageTap: nil,
