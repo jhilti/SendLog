@@ -30,7 +30,12 @@ struct CreateWallSheet: View {
                 }
 
                 Section("Photo") {
-                    PhotosPicker(selection: $selectedItem, matching: .images, photoLibrary: .shared()) {
+                    PhotosPicker(
+                        selection: $selectedItem,
+                        matching: .images,
+                        preferredItemEncoding: .current,
+                        photoLibrary: .shared()
+                    ) {
                         Label(previewImage == nil ? "Pick Wall Image" : "Change Wall Image", systemImage: "photo")
                     }
 

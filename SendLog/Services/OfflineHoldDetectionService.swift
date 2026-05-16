@@ -79,6 +79,26 @@ struct OfflineHoldDetectionService {
         var maxDimension: CGFloat
     }
 
+    private struct DetectionProfile {
+        var modelConfidenceThreshold: Float
+        var minInsideRatio: Float
+        var minFillRatio: Float
+        var minPeakScore: Float
+        var candidateLimit: Int
+
+        static func profile(for targetCount: Int) -> DetectionProfile {
+            let extraDetectionRatio = Float(min(max(targetCount - 92, 0), 88)) / 88
+
+            return DetectionProfile(
+                modelConfidenceThreshold: 0.22 - (0.12 * extraDetectionRatio),
+                minInsideRatio: 0.70 - (0.16 * extraDetectionRatio),
+                minFillRatio: 0.055 - (0.030 * extraDetectionRatio),
+                minPeakScore: 0.10 - (0.060 * extraDetectionRatio),
+                candidateLimit: targetCount > 92 ? 1_600 : 700
+            )
+        }
+    }
+
     private struct InputGeometry {
         let imageRect: CGRect
 
@@ -131,7 +151,7 @@ struct OfflineHoldDetectionService {
 
     private static func detectHoldsSynchronously(in image: UIImage, targetCount: Int) throws -> [Hold] {
         let geometry = inputGeometry(for: image, size: inputSize)
-        let candidates = try candidatesSynchronously(in: image, geometry: geometry)
+        let candidates = try candidatesSynchronously(in: image, geometry: geometry, targetCount: targetCount)
         let selected = selectCandidates(candidates, targetCount: targetCount)
         return selected.compactMap { candidate in
             hold(from: candidate, geometry: geometry)
@@ -145,7 +165,7 @@ struct OfflineHoldDetectionService {
         )
         let geometry = inputGeometry(for: image, size: inputSize)
         let displayPoint = geometry.modelPoint(fromNormalizedPoint: point)
-        let candidates = try candidatesSynchronously(in: image, geometry: geometry)
+        let candidates = try candidatesSynchronously(in: image, geometry: geometry, targetCount: 180)
         guard let candidate = candidate(atDisplayPoint: displayPoint, in: candidates) else {
             return nil
         }
@@ -253,7 +273,7 @@ struct OfflineHoldDetectionService {
         return sorted[lowerIndex] + ((sorted[upperIndex] - sorted[lowerIndex]) * fraction)
     }
 
-    private static func candidatesSynchronously(in image: UIImage, geometry: InputGeometry) throws -> [Candidate] {
+    private static func candidatesSynchronously(in image: UIImage, geometry: InputGeometry, targetCount: Int) throws -> [Candidate] {
         guard let pixelBuffer = pixelBuffer(from: image, size: inputSize, imageRect: geometry.imageRect) else {
             throw DetectionError.imagePreparationFailed
         }
@@ -261,6 +281,7 @@ struct OfflineHoldDetectionService {
             throw DetectionError.imagePreparationFailed
         }
         let sizeConstraints = sizeConstraints()
+        let profile = DetectionProfile.profile(for: targetCount)
 
         let model = try loadModel()
         let input = try MLDictionaryFeatureProvider(dictionary: [
@@ -277,7 +298,8 @@ struct OfflineHoldDetectionService {
             from: predictions,
             prototypes: prototypes,
             scoreMap: scoreMap,
-            sizeConstraints: sizeConstraints
+            sizeConstraints: sizeConstraints,
+            profile: profile
         )
     }
 
@@ -509,7 +531,8 @@ struct OfflineHoldDetectionService {
         from predictions: MLMultiArray,
         prototypes: MLMultiArray,
         scoreMap: ScoreMap,
-        sizeConstraints: SizeConstraints
+        sizeConstraints: SizeConstraints,
+        profile: DetectionProfile
     ) -> [Candidate] {
         let channelCount = predictions.shape[1].intValue
         let candidateCount = predictions.shape[2].intValue
@@ -530,7 +553,7 @@ struct OfflineHoldDetectionService {
 
         for index in 0..<candidateCount {
             let confidence = value(channel: 4, candidate: index)
-            guard confidence >= 0.22 else {
+            guard confidence >= profile.modelConfidenceThreshold else {
                 continue
             }
 
@@ -565,7 +588,8 @@ struct OfflineHoldDetectionService {
                 for: candidate,
                 prototypes: prototypes,
                 scoreMap: scoreMap,
-                sizeConstraints: sizeConstraints
+                sizeConstraints: sizeConstraints,
+                profile: profile
             ) else {
                 continue
             }
@@ -579,7 +603,7 @@ struct OfflineHoldDetectionService {
 
         return candidates
             .sorted { $0.holdScore > $1.holdScore }
-            .prefix(700)
+            .prefix(profile.candidateLimit)
             .map { $0 }
     }
 
@@ -709,7 +733,8 @@ struct OfflineHoldDetectionService {
         for candidate: Candidate,
         prototypes: MLMultiArray,
         scoreMap: ScoreMap,
-        sizeConstraints: SizeConstraints
+        sizeConstraints: SizeConstraints,
+        profile: DetectionProfile
     ) -> (rect: CGRect, contour: [NormalizedPoint]?, maskPixels: Set<Int>, score: Float)? {
         let pointer = prototypes.dataPointer.bindMemory(to: Float.self, capacity: prototypes.count)
         let channelStride = prototypes.strides[1].intValue
@@ -760,7 +785,7 @@ struct OfflineHoldDetectionService {
         let count = component.indices.count
 
         let insideRatio = Float(count) / Float(max(rawCount, 1))
-        guard insideRatio >= 0.70 else {
+        guard insideRatio >= profile.minInsideRatio else {
             return nil
         }
 
@@ -792,7 +817,7 @@ struct OfflineHoldDetectionService {
               maxDimension <= sizeConstraints.maxDimension else {
             return nil
         }
-        guard fillRatio >= 0.055 else {
+        guard fillRatio >= profile.minFillRatio else {
             return nil
         }
         guard aspectRatio <= 8.0 || fillRatio >= 0.22 else {
@@ -808,7 +833,7 @@ struct OfflineHoldDetectionService {
             scoreSum += localScore
             peakScore = max(peakScore, localScore)
         }
-        guard peakScore >= 0.10 else {
+        guard peakScore >= profile.minPeakScore else {
             return nil
         }
 

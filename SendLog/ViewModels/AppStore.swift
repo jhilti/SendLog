@@ -523,7 +523,7 @@ final class AppStore: ObservableObject {
         guard currentHoldCount > 0 else {
             return 92
         }
-        return min(180, max(92, currentHoldCount + 24))
+        return 180
     }
 
     func removeLastManualHold(wallID: UUID) async throws {
