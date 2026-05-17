@@ -26,9 +26,12 @@ struct SessionLogEntry: Identifiable, Codable, Hashable {
 struct BoulderImportCandidate: Identifiable, Hashable {
     let id: String
     let sourceWallID: UUID
+    let sourceWallSetID: UUID
     let sourceWallName: String
+    let sourceSetName: String
     let sourceBoulder: Boulder
     let matchedHoldIDs: [UUID]
+    let matchedSecondaryHoldIDs: [UUID]
     let missingHoldCount: Int
     let totalHoldCount: Int
 
@@ -318,7 +321,35 @@ final class AppStore: ObservableObject {
 
     private struct BackupWall: Codable {
         let wall: Wall
-        let imageDataBase64: String
+        let imageDataByFilename: [String: String]
+
+        private enum CodingKeys: String, CodingKey {
+            case wall
+            case imageDataBase64
+            case imageDataByFilename
+        }
+
+        init(wall: Wall, imageDataByFilename: [String: String]) {
+            self.wall = wall
+            self.imageDataByFilename = imageDataByFilename
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            wall = try container.decode(Wall.self, forKey: .wall)
+            if let images = try container.decodeIfPresent([String: String].self, forKey: .imageDataByFilename) {
+                imageDataByFilename = images
+            } else {
+                let imageDataBase64 = try container.decode(String.self, forKey: .imageDataBase64)
+                imageDataByFilename = [wall.imageFilename: imageDataBase64]
+            }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(wall, forKey: .wall)
+            try container.encode(imageDataByFilename, forKey: .imageDataByFilename)
+        }
     }
 
     @Published private(set) var walls: [Wall] = []
@@ -419,6 +450,18 @@ final class AppStore: ObservableObject {
         return image
     }
 
+    func image(for set: WallSet) -> UIImage? {
+        let cacheKey = set.imageFilename as NSString
+        if let cached = imageCache.object(forKey: cacheKey) {
+            return cached
+        }
+        guard let image = imageStore.loadImage(filename: set.imageFilename) else {
+            return nil
+        }
+        imageCache.setObject(image, forKey: cacheKey)
+        return image
+    }
+
     func createWall(name: String, imageData: Data) async throws {
         guard UIImage(data: imageData) != nil else {
             throw AppStoreError.invalidImage
@@ -436,6 +479,33 @@ final class AppStore: ObservableObject {
         try await persist()
     }
 
+    func createWallSet(wallID: UUID, name: String, imageData: Data) async throws {
+        guard UIImage(data: imageData) != nil else {
+            throw AppStoreError.invalidImage
+        }
+        guard let index = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+
+        let setID = UUID()
+        let filename = try imageStore.saveImageData(imageData, for: setID)
+        let set = WallSet(
+            id: setID,
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            imageFilename: filename
+        )
+        walls[index].appendSet(set)
+        try await persist()
+    }
+
+    func activateWallSet(wallID: UUID, setID: UUID) async throws {
+        guard let index = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+        walls[index].activateSet(id: setID)
+        try await persist()
+    }
+
     func deleteWall(wallID: UUID) async throws {
         guard let index = wallIndex(for: wallID) else {
             throw AppStoreError.wallNotFound
@@ -450,8 +520,10 @@ final class AppStore: ObservableObject {
             throw error
         }
 
-        imageCache.removeObject(forKey: removedWall.imageFilename as NSString)
-        imageStore.deleteImage(filename: removedWall.imageFilename)
+        for filename in Set(removedWall.sets.map(\.imageFilename)) {
+            imageCache.removeObject(forKey: filename as NSString)
+            imageStore.deleteImage(filename: filename)
+        }
     }
 
     func removeHold(wallID: UUID, holdID: UUID) async throws {
@@ -668,7 +740,8 @@ final class AppStore: ObservableObject {
         name: String,
         grade: String,
         notes: String,
-        holdIDs: [UUID]
+        holdIDs: [UUID],
+        secondaryHoldIDs: [UUID] = []
     ) async throws {
         guard let index = wallIndex(for: wallID) else {
             throw AppStoreError.wallNotFound
@@ -676,10 +749,12 @@ final class AppStore: ObservableObject {
 
         let boulder = Boulder(
             wallID: wallID,
+            wallSetID: walls[index].activeSetID,
             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
             grade: grade.trimmingCharacters(in: .whitespacesAndNewlines),
             notes: notes.trimmingCharacters(in: .whitespacesAndNewlines),
-            holdIDs: holdIDs
+            holdIDs: holdIDs,
+            secondaryHoldIDs: secondaryHoldIDs
         )
 
         walls[index].boulders.insert(boulder, at: 0)
@@ -703,7 +778,8 @@ final class AppStore: ObservableObject {
         name: String,
         grade: String,
         notes: String,
-        holdIDs: [UUID]
+        holdIDs: [UUID],
+        secondaryHoldIDs: [UUID] = []
     ) async throws {
         guard let wallIdx = wallIndex(for: wallID) else {
             throw AppStoreError.wallNotFound
@@ -716,6 +792,7 @@ final class AppStore: ObservableObject {
         walls[wallIdx].boulders[boulderIdx].grade = grade.trimmingCharacters(in: .whitespacesAndNewlines)
         walls[wallIdx].boulders[boulderIdx].notes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
         walls[wallIdx].boulders[boulderIdx].holdIDs = holdIDs
+        walls[wallIdx].boulders[boulderIdx].secondaryHoldIDs = secondaryHoldIDs.filter { holdIDs.contains($0) }
         walls[wallIdx].updatedAt = Date()
         try await persist()
     }
@@ -726,22 +803,29 @@ final class AppStore: ObservableObject {
         }
 
         let existingSignatures = Set(targetWall.boulders.map { boulderSignature(for: $0, holdIDs: $0.holdIDs) })
-        let targetColorDescriptors = colorDescriptors(for: targetWall)
+        let targetSet = targetWall.activeSet
+        let targetColorDescriptors = colorDescriptors(for: targetSet)
         return walls
-            .filter { $0.id != wallID }
             .flatMap { sourceWall in
-                let transform = bestGeometryTransform(from: sourceWall.holds, to: targetWall.holds)
-                let sourceColorDescriptors = colorDescriptors(for: sourceWall)
-                return sourceWall.boulders.compactMap { boulder in
-                    importCandidate(
-                        from: boulder,
-                        sourceWall: sourceWall,
-                        targetWall: targetWall,
-                        existingSignatures: existingSignatures,
-                        transform: transform,
-                        sourceColorDescriptors: sourceColorDescriptors,
-                        targetColorDescriptors: targetColorDescriptors
-                    )
+                sourceWall.sets.flatMap { sourceSet -> [BoulderImportCandidate] in
+                    guard sourceWall.id != wallID || sourceSet.id != targetWall.activeSetID else {
+                        return []
+                    }
+
+                    let transform = bestGeometryTransform(from: sourceSet.holds, to: targetSet.holds)
+                    let sourceColorDescriptors = colorDescriptors(for: sourceSet)
+                    return sourceSet.boulders.compactMap { boulder in
+                        importCandidate(
+                            from: boulder,
+                            sourceWall: sourceWall,
+                            sourceSet: sourceSet,
+                            targetSet: targetSet,
+                            existingSignatures: existingSignatures,
+                            transform: transform,
+                            sourceColorDescriptors: sourceColorDescriptors,
+                            targetColorDescriptors: targetColorDescriptors
+                        )
+                    }
                 }
             }
             .sorted { lhs, rhs in
@@ -753,6 +837,9 @@ final class AppStore: ObservableObject {
                 }
                 if lhs.sourceWallName != rhs.sourceWallName {
                     return lhs.sourceWallName.localizedCaseInsensitiveCompare(rhs.sourceWallName) == .orderedAscending
+                }
+                if lhs.sourceSetName != rhs.sourceSetName {
+                    return lhs.sourceSetName.localizedCaseInsensitiveCompare(rhs.sourceSetName) == .orderedAscending
                 }
                 return lhs.sourceBoulder.createdAt > rhs.sourceBoulder.createdAt
             }
@@ -773,10 +860,12 @@ final class AppStore: ObservableObject {
 
             return Boulder(
                 wallID: wallID,
+                wallSetID: walls[index].activeSetID,
                 name: candidate.sourceBoulder.name,
                 grade: candidate.sourceBoulder.grade,
                 notes: importedNotes(for: candidate),
                 holdIDs: holdIDs,
+                secondaryHoldIDs: candidate.matchedSecondaryHoldIDs.filter { holdIDs.contains($0) },
                 attemptCount: candidate.sourceBoulder.attemptCount,
                 tickCount: candidate.sourceBoulder.tickCount,
                 logEntries: candidate.sourceBoulder.logEntries,
@@ -795,112 +884,114 @@ final class AppStore: ObservableObject {
     }
 
     func incrementBoulderTick(wallID: UUID, boulderID: UUID) async throws {
-        guard let wallIdx = wallIndex(for: wallID) else {
-            throw AppStoreError.wallNotFound
-        }
-        guard let boulderIdx = walls[wallIdx].boulders.firstIndex(where: { $0.id == boulderID }) else {
-            throw AppStoreError.boulderNotFound
-        }
+        let location = try boulderLocation(wallID: wallID, boulderID: boulderID)
+        let wallIdx = location.wallIndex
+        let setIdx = location.setIndex
+        let boulderIdx = location.boulderIndex
 
-        walls[wallIdx].boulders[boulderIdx].attemptCount += 1
-        walls[wallIdx].boulders[boulderIdx].tickCount += 1
-        appendLogEntry(attempts: 1, ticks: 1, toBoulderAt: boulderIdx, onWallAt: wallIdx)
+        walls[wallIdx].sets[setIdx].boulders[boulderIdx].attemptCount += 1
+        walls[wallIdx].sets[setIdx].boulders[boulderIdx].tickCount += 1
+        appendLogEntry(attempts: 1, ticks: 1, toBoulderAt: boulderIdx, onSetAt: setIdx, onWallAt: wallIdx)
         adjustSessionActivity(attempts: 1, ticks: 1)
+        walls[wallIdx].sets[setIdx].updatedAt = Date()
         walls[wallIdx].updatedAt = Date()
         try await persist()
     }
 
     func incrementBoulderAttempt(wallID: UUID, boulderID: UUID) async throws {
-        guard let wallIdx = wallIndex(for: wallID) else {
-            throw AppStoreError.wallNotFound
-        }
-        guard let boulderIdx = walls[wallIdx].boulders.firstIndex(where: { $0.id == boulderID }) else {
-            throw AppStoreError.boulderNotFound
-        }
+        let location = try boulderLocation(wallID: wallID, boulderID: boulderID)
+        let wallIdx = location.wallIndex
+        let setIdx = location.setIndex
+        let boulderIdx = location.boulderIndex
 
-        walls[wallIdx].boulders[boulderIdx].attemptCount += 1
-        appendLogEntry(attempts: 1, ticks: 0, toBoulderAt: boulderIdx, onWallAt: wallIdx)
+        walls[wallIdx].sets[setIdx].boulders[boulderIdx].attemptCount += 1
+        appendLogEntry(attempts: 1, ticks: 0, toBoulderAt: boulderIdx, onSetAt: setIdx, onWallAt: wallIdx)
         adjustSessionActivity(attempts: 1, ticks: 0)
+        walls[wallIdx].sets[setIdx].updatedAt = Date()
         walls[wallIdx].updatedAt = Date()
         try await persist()
     }
 
     func decrementBoulderTick(wallID: UUID, boulderID: UUID) async throws {
-        guard let wallIdx = wallIndex(for: wallID) else {
-            throw AppStoreError.wallNotFound
-        }
-        guard let boulderIdx = walls[wallIdx].boulders.firstIndex(where: { $0.id == boulderID }) else {
-            throw AppStoreError.boulderNotFound
-        }
+        let location = try boulderLocation(wallID: wallID, boulderID: boulderID)
+        let wallIdx = location.wallIndex
+        let setIdx = location.setIndex
+        let boulderIdx = location.boulderIndex
 
-        guard walls[wallIdx].boulders[boulderIdx].tickCount > 0 else {
+        guard walls[wallIdx].sets[setIdx].boulders[boulderIdx].tickCount > 0 else {
             return
         }
 
         if let removedEntry = removeLastLogEntry(
             matching: { $0.ticks > 0 },
             fromBoulderAt: boulderIdx,
+            onSetAt: setIdx,
             onWallAt: wallIdx
         ) {
-            walls[wallIdx].boulders[boulderIdx].tickCount = max(
+            walls[wallIdx].sets[setIdx].boulders[boulderIdx].tickCount = max(
                 0,
-                walls[wallIdx].boulders[boulderIdx].tickCount - removedEntry.ticks
+                walls[wallIdx].sets[setIdx].boulders[boulderIdx].tickCount - removedEntry.ticks
             )
-            walls[wallIdx].boulders[boulderIdx].attemptCount = max(
+            walls[wallIdx].sets[setIdx].boulders[boulderIdx].attemptCount = max(
                 0,
-                walls[wallIdx].boulders[boulderIdx].attemptCount - removedEntry.attempts
+                walls[wallIdx].sets[setIdx].boulders[boulderIdx].attemptCount - removedEntry.attempts
             )
             adjustSessionActivity(attempts: -removedEntry.attempts, ticks: -removedEntry.ticks)
         } else {
-            walls[wallIdx].boulders[boulderIdx].tickCount -= 1
-            walls[wallIdx].boulders[boulderIdx].attemptCount = max(
+            walls[wallIdx].sets[setIdx].boulders[boulderIdx].tickCount -= 1
+            walls[wallIdx].sets[setIdx].boulders[boulderIdx].attemptCount = max(
                 0,
-                walls[wallIdx].boulders[boulderIdx].attemptCount - 1
+                walls[wallIdx].sets[setIdx].boulders[boulderIdx].attemptCount - 1
             )
             adjustSessionActivity(attempts: -1, ticks: -1)
         }
+        walls[wallIdx].sets[setIdx].updatedAt = Date()
         walls[wallIdx].updatedAt = Date()
         try await persist()
     }
 
     func decrementBoulderAttempt(wallID: UUID, boulderID: UUID) async throws {
-        guard let wallIdx = wallIndex(for: wallID) else {
-            throw AppStoreError.wallNotFound
-        }
-        guard let boulderIdx = walls[wallIdx].boulders.firstIndex(where: { $0.id == boulderID }) else {
-            throw AppStoreError.boulderNotFound
-        }
+        let location = try boulderLocation(wallID: wallID, boulderID: boulderID)
+        let wallIdx = location.wallIndex
+        let setIdx = location.setIndex
+        let boulderIdx = location.boulderIndex
 
-        guard walls[wallIdx].boulders[boulderIdx].attemptCount > 0 else {
+        guard walls[wallIdx].sets[setIdx].boulders[boulderIdx].attemptCount > 0 else {
             return
         }
 
         if let removedEntry = removeLastLogEntry(
             matching: { $0.attempts > 0 && $0.ticks == 0 },
             fromBoulderAt: boulderIdx,
+            onSetAt: setIdx,
             onWallAt: wallIdx
         ) {
-            walls[wallIdx].boulders[boulderIdx].attemptCount = max(
+            walls[wallIdx].sets[setIdx].boulders[boulderIdx].attemptCount = max(
                 0,
-                walls[wallIdx].boulders[boulderIdx].attemptCount - removedEntry.attempts
+                walls[wallIdx].sets[setIdx].boulders[boulderIdx].attemptCount - removedEntry.attempts
             )
             adjustSessionActivity(attempts: -removedEntry.attempts, ticks: 0)
         } else {
             return
         }
+        walls[wallIdx].sets[setIdx].updatedAt = Date()
         walls[wallIdx].updatedAt = Date()
         try await persist()
     }
 
     func exportBackupData() throws -> Data {
         let backupWalls = try walls.map { wall -> BackupWall in
-            guard let imageData = imageStore.loadImageData(filename: wall.imageFilename) else {
-                throw AppStoreError.missingWallImage
+            var imageDataByFilename: [String: String] = [:]
+            for filename in Set(wall.sets.map(\.imageFilename)) {
+                guard let imageData = imageStore.loadImageData(filename: filename) else {
+                    throw AppStoreError.missingWallImage
+                }
+                imageDataByFilename[filename] = imageData.base64EncodedString()
             }
 
             return BackupWall(
                 wall: wall,
-                imageDataBase64: imageData.base64EncodedString()
+                imageDataByFilename: imageDataByFilename
             )
         }
 
@@ -935,13 +1026,16 @@ final class AppStore: ObservableObject {
         importedWalls.reserveCapacity(payload.walls.count)
 
         for backupWall in payload.walls {
-            guard let imageData = Data(base64Encoded: backupWall.imageDataBase64),
-                  UIImage(data: imageData) != nil else {
-                throw AppStoreError.invalidBackupData
-            }
-
             var wall = backupWall.wall
-            wall.imageFilename = try imageStore.saveImageData(imageData, for: wall.id)
+            for setIndex in wall.sets.indices {
+                let originalFilename = wall.sets[setIndex].imageFilename
+                guard let imageDataBase64 = backupWall.imageDataByFilename[originalFilename],
+                      let imageData = Data(base64Encoded: imageDataBase64),
+                      UIImage(data: imageData) != nil else {
+                    throw AppStoreError.invalidBackupData
+                }
+                wall.sets[setIndex].imageFilename = try imageStore.saveImageData(imageData, for: wall.sets[setIndex].id)
+            }
 
             importedWalls.append(wall)
         }
@@ -962,18 +1056,35 @@ final class AppStore: ObservableObject {
         walls.firstIndex { $0.id == wallID }
     }
 
+    private func boulderLocation(wallID: UUID, boulderID: UUID) throws -> (wallIndex: Int, setIndex: Int, boulderIndex: Int) {
+        guard let wallIndex = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+
+        for setIndex in walls[wallIndex].sets.indices {
+            if let boulderIndex = walls[wallIndex].sets[setIndex].boulders.firstIndex(where: { $0.id == boulderID }) {
+                return (wallIndex, setIndex, boulderIndex)
+            }
+        }
+
+        throw AppStoreError.boulderNotFound
+    }
+
     private func importCandidate(
         from boulder: Boulder,
         sourceWall: Wall,
-        targetWall: Wall,
+        sourceSet: WallSet,
+        targetSet: WallSet,
         existingSignatures: Set<String>,
         transform: HoldGeometryTransform,
         sourceColorDescriptors: [UUID: HoldColorDescriptor],
         targetColorDescriptors: [UUID: HoldColorDescriptor]
     ) -> BoulderImportCandidate? {
-        let sourceHoldsByID = Dictionary(uniqueKeysWithValues: sourceWall.holds.map { ($0.id, $0) })
+        let sourceHoldsByID = Dictionary(uniqueKeysWithValues: sourceSet.holds.map { ($0.id, $0) })
+        let sourceSecondaryHoldIDs = Set(boulder.secondaryHoldIDs)
         var usedTargetHoldIDs = Set<UUID>()
         var matchedHoldIDs: [UUID] = []
+        var matchedSecondaryHoldIDs: [UUID] = []
         var missingHoldCount = 0
 
         for holdID in boulder.holdIDs {
@@ -981,7 +1092,7 @@ final class AppStore: ObservableObject {
                   let targetHold = bestMatchingHold(
                     for: sourceHold,
                     transform: transform,
-                    in: targetWall.holds,
+                    in: targetSet.holds,
                     excluding: usedTargetHoldIDs,
                     sourceColorDescriptor: sourceColorDescriptors[sourceHold.id],
                     targetColorDescriptors: targetColorDescriptors
@@ -992,6 +1103,9 @@ final class AppStore: ObservableObject {
 
             usedTargetHoldIDs.insert(targetHold.id)
             matchedHoldIDs.append(targetHold.id)
+            if sourceSecondaryHoldIDs.contains(holdID) {
+                matchedSecondaryHoldIDs.append(targetHold.id)
+            }
         }
 
         guard !matchedHoldIDs.isEmpty else {
@@ -1000,11 +1114,14 @@ final class AppStore: ObservableObject {
 
         let totalHoldCount = boulder.holdIDs.count
         let candidate = BoulderImportCandidate(
-            id: "\(sourceWall.id.uuidString)-\(boulder.id.uuidString)",
+            id: "\(sourceWall.id.uuidString)-\(sourceSet.id.uuidString)-\(boulder.id.uuidString)",
             sourceWallID: sourceWall.id,
+            sourceWallSetID: sourceSet.id,
             sourceWallName: sourceWall.name,
+            sourceSetName: sourceSet.name,
             sourceBoulder: boulder,
             matchedHoldIDs: matchedHoldIDs,
+            matchedSecondaryHoldIDs: matchedSecondaryHoldIDs,
             missingHoldCount: missingHoldCount,
             totalHoldCount: totalHoldCount
         )
@@ -1269,22 +1386,26 @@ final class AppStore: ObservableObject {
     }
 
     private func colorDescriptors(for wall: Wall) -> [UUID: HoldColorDescriptor] {
+        colorDescriptors(for: wall.activeSet)
+    }
+
+    private func colorDescriptors(for set: WallSet) -> [UUID: HoldColorDescriptor] {
         let cacheKey = [
-            wall.id.uuidString,
-            wall.imageFilename,
-            "\(wall.updatedAt.timeIntervalSinceReferenceDate)",
-            "\(wall.holds.hashValue)"
+            set.id.uuidString,
+            set.imageFilename,
+            "\(set.updatedAt.timeIntervalSinceReferenceDate)",
+            "\(set.holds.hashValue)"
         ].joined(separator: "|")
 
         if let cached = holdColorDescriptorCache[cacheKey] {
             return cached
         }
 
-        guard let image = image(for: wall), let sampler = HoldColorSampler(image: image) else {
+        guard let image = image(for: set), let sampler = HoldColorSampler(image: image) else {
             return [:]
         }
 
-        let descriptors: [UUID: HoldColorDescriptor] = Dictionary(uniqueKeysWithValues: wall.holds.compactMap { hold -> (UUID, HoldColorDescriptor)? in
+        let descriptors: [UUID: HoldColorDescriptor] = Dictionary(uniqueKeysWithValues: set.holds.compactMap { hold -> (UUID, HoldColorDescriptor)? in
             guard let descriptor = sampler.descriptor(for: hold.rect) else {
                 return nil
             }
@@ -1351,7 +1472,7 @@ final class AppStore: ObservableObject {
         }
 
         let missingText = candidate.missingHoldCount == 1 ? "1 hold missing" : "\(candidate.missingHoldCount) holds missing"
-        let importNote = "Imported from \(candidate.sourceWallName); \(missingText)."
+        let importNote = "Imported from \(candidate.sourceWallName) / \(candidate.sourceSetName); \(missingText)."
         return notes.isEmpty ? importNote : "\(notes)\n\n\(importNote)"
     }
 
@@ -1407,19 +1528,14 @@ final class AppStore: ObservableObject {
         }
 
         return holds.filter { hold in
-            polygons.contains { holdIsInsideWallArea(hold, polygon: $0, margin: 0.018) }
+            polygons.contains { holdIsInsideWallArea(hold, polygon: $0) }
         }
     }
 
-    private func holdIsInsideWallArea(_ hold: Hold, polygon: [NormalizedPoint], margin: CGFloat) -> Bool {
+    private func holdIsInsideWallArea(_ hold: Hold, polygon: [NormalizedPoint]) -> Bool {
         let rect = hold.rect.cgRect
         let center = CGPoint(x: rect.midX, y: rect.midY)
-
-        if polygonContains(center, polygon: polygon) {
-            return true
-        }
-
-        return distanceFromPolygonEdge(to: center, polygon: polygon) <= margin
+        return polygonContains(center, polygon: polygon)
     }
 
     private func polygonContains(_ point: CGPoint, polygon: [NormalizedPoint]) -> Bool {
@@ -1609,8 +1725,14 @@ final class AppStore: ObservableObject {
         userDefaults.set(data, forKey: sessionLogsKey)
     }
 
-    private func appendLogEntry(attempts: Int, ticks: Int, toBoulderAt boulderIndex: Int, onWallAt wallIndex: Int) {
-        walls[wallIndex].boulders[boulderIndex].logEntries.append(
+    private func appendLogEntry(
+        attempts: Int,
+        ticks: Int,
+        toBoulderAt boulderIndex: Int,
+        onSetAt setIndex: Int,
+        onWallAt wallIndex: Int
+    ) {
+        walls[wallIndex].sets[setIndex].boulders[boulderIndex].logEntries.append(
             BoulderLogEntry(attempts: attempts, ticks: ticks)
         )
     }
@@ -1618,13 +1740,14 @@ final class AppStore: ObservableObject {
     private func removeLastLogEntry(
         matching predicate: (BoulderLogEntry) -> Bool,
         fromBoulderAt boulderIndex: Int,
+        onSetAt setIndex: Int,
         onWallAt wallIndex: Int
     ) -> BoulderLogEntry? {
-        guard let logIndex = walls[wallIndex].boulders[boulderIndex].logEntries.lastIndex(where: predicate) else {
+        guard let logIndex = walls[wallIndex].sets[setIndex].boulders[boulderIndex].logEntries.lastIndex(where: predicate) else {
             return nil
         }
 
-        return walls[wallIndex].boulders[boulderIndex].logEntries.remove(at: logIndex)
+        return walls[wallIndex].sets[setIndex].boulders[boulderIndex].logEntries.remove(at: logIndex)
     }
 }
 

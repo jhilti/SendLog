@@ -20,8 +20,9 @@ struct BoulderComposerView: View {
         self.editingBoulder = editingBoulder
 
         if let editingBoulder {
-            _primarySelectedHoldIDs = State(initialValue: Set(editingBoulder.holdIDs))
-            _secondarySelectedHoldIDs = State(initialValue: [])
+            let secondaryHoldIDs = Set(editingBoulder.secondaryHoldIDs)
+            _primarySelectedHoldIDs = State(initialValue: Set(editingBoulder.holdIDs).subtracting(secondaryHoldIDs))
+            _secondarySelectedHoldIDs = State(initialValue: secondaryHoldIDs)
             _name = State(initialValue: editingBoulder.name)
             _selectedGrade = State(initialValue: Self.grade(from: editingBoulder.grade))
             _notes = State(initialValue: editingBoulder.notes)
@@ -155,7 +156,8 @@ struct BoulderComposerView: View {
                         name: name,
                         grade: selectedGrade.rawValue,
                         notes: notes,
-                        holdIDs: orderedIDs
+                        holdIDs: orderedIDs,
+                        secondaryHoldIDs: orderedSecondaryIDs
                     )
                 } else {
                     try await store.saveBoulder(
@@ -163,7 +165,8 @@ struct BoulderComposerView: View {
                         name: name,
                         grade: selectedGrade.rawValue,
                         notes: notes,
-                        holdIDs: orderedIDs
+                        holdIDs: orderedIDs,
+                        secondaryHoldIDs: orderedSecondaryIDs
                     )
                 }
                 dismiss()
@@ -172,5 +175,9 @@ struct BoulderComposerView: View {
                 isSaving = false
             }
         }
+    }
+
+    private var orderedSecondaryIDs: [UUID] {
+        secondarySelectedHoldIDs.sorted { $0.uuidString < $1.uuidString }
     }
 }

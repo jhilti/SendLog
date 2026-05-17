@@ -104,9 +104,11 @@ struct WallLibraryView: View {
             }
             .fullScreenCover(item: $previewTarget) { target in
                 if let wall = store.wall(withID: target.wallID),
-                   let image = store.image(for: wall) {
+                   let set = wall.sets.first(where: { $0.id == target.wallSetID }),
+                   let image = store.image(for: set) {
                     BoulderPreviewSheet(
                         wallID: target.wallID,
+                        wallSetID: target.wallSetID,
                         image: image,
                         initialBoulderID: target.boulderID
                     )
@@ -229,6 +231,7 @@ struct WallLibraryView: View {
                     Button {
                         previewTarget = BoulderPreviewTarget(
                             wallID: entry.wallID,
+                            wallSetID: entry.wallSetID,
                             boulderID: entry.boulder.id
                         )
                     } label: {
@@ -289,8 +292,16 @@ struct WallLibraryView: View {
     private var allProblems: [BoulderLibraryEntry] {
         store.walls
             .flatMap { wall in
-                wall.boulders.map { boulder in
-                    BoulderLibraryEntry(wallID: wall.id, wallName: wall.name, boulder: boulder)
+                wall.sets.flatMap { set in
+                    set.boulders.map { boulder in
+                        BoulderLibraryEntry(
+                            wallID: wall.id,
+                            wallSetID: set.id,
+                            wallName: wall.name,
+                            setName: set.name,
+                            boulder: boulder
+                        )
+                    }
                 }
             }
     }
@@ -309,6 +320,7 @@ struct WallLibraryView: View {
                     || entry.boulder.notes.localizedCaseInsensitiveContains(query)
                     || entry.boulder.grade.localizedCaseInsensitiveContains(query)
                     || entry.wallName.localizedCaseInsensitiveContains(query)
+                    || entry.setName.localizedCaseInsensitiveContains(query)
             }
 
             return gradeMatches && searchMatches
@@ -358,14 +370,18 @@ struct WallLibraryView: View {
     private var allBoulderLogEntries: [BoulderLogLibraryEntry] {
         store.walls
             .flatMap { wall in
-                wall.boulders.flatMap { boulder in
-                    boulder.logEntries.map { logEntry in
-                        BoulderLogLibraryEntry(
-                            wallID: wall.id,
-                            wallName: wall.name,
-                            boulder: boulder,
-                            logEntry: logEntry
-                        )
+                wall.sets.flatMap { set in
+                    set.boulders.flatMap { boulder in
+                        boulder.logEntries.map { logEntry in
+                            BoulderLogLibraryEntry(
+                                wallID: wall.id,
+                                wallSetID: set.id,
+                                wallName: wall.name,
+                                setName: set.name,
+                                boulder: boulder,
+                                logEntry: logEntry
+                            )
+                        }
                     }
                 }
             }
@@ -400,7 +416,9 @@ struct WallLibraryView: View {
                     .climb(
                         DailyBoulderLogSummary(
                             wallID: first.wallID,
+                            wallSetID: first.wallSetID,
                             wallName: first.wallName,
+                            setName: first.setName,
                             boulder: first.boulder,
                             recordedAt: recordedAt,
                             attempts: summaries.reduce(0) { $0 + $1.logEntry.attempts },
@@ -463,6 +481,7 @@ struct WallLibraryView: View {
                     return summary.boulder.name.localizedCaseInsensitiveContains(query)
                         || summary.boulder.grade.localizedCaseInsensitiveContains(query)
                         || summary.wallName.localizedCaseInsensitiveContains(query)
+                        || summary.setName.localizedCaseInsensitiveContains(query)
                         || itemTimestamp.localizedCaseInsensitiveContains(query)
                         || "attempts: \(summary.attempts)".localizedCaseInsensitiveContains(query)
                         || "ticks: \(summary.ticks)".localizedCaseInsensitiveContains(query)
@@ -589,7 +608,9 @@ private enum ProblemSort: String, CaseIterable, Identifiable {
 
 private struct BoulderLibraryEntry: Identifiable {
     let wallID: UUID
+    let wallSetID: UUID
     let wallName: String
+    let setName: String
     let boulder: Boulder
 
     var id: UUID { boulder.id }
@@ -597,7 +618,9 @@ private struct BoulderLibraryEntry: Identifiable {
 
 private struct BoulderLogLibraryEntry: Identifiable {
     let wallID: UUID
+    let wallSetID: UUID
     let wallName: String
+    let setName: String
     let boulder: Boulder
     let logEntry: BoulderLogEntry
 
@@ -606,7 +629,9 @@ private struct BoulderLogLibraryEntry: Identifiable {
 
 private struct DailyBoulderLogSummary: Identifiable {
     let wallID: UUID
+    let wallSetID: UUID
     let wallName: String
+    let setName: String
     let boulder: Boulder
     let recordedAt: Date
     let attempts: Int
@@ -681,6 +706,7 @@ private struct LogDateGroup: Identifiable {
 
 private struct BoulderPreviewTarget: Identifiable {
     let wallID: UUID
+    let wallSetID: UUID
     let boulderID: UUID
 
     var id: UUID { boulderID }
@@ -718,6 +744,11 @@ private struct WallRow: View {
                 Text("\(wall.holds.count) holds • \(wall.boulders.count) problems")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                if wall.sets.count > 1 {
+                    Text("\(wall.sets.count) sets • \(wall.sets.reduce(0) { $0 + $1.boulders.count }) total problems")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Text("Updated \(wall.updatedAt, formatter: Self.dateFormatter)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -749,7 +780,7 @@ private struct ProblemLibraryRow: View {
             Text("\(entry.boulder.holdIDs.count) holds • \(entry.boulder.attemptCount) attempts • \(entry.boulder.tickCount) ticks")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-            Text("Wall: \(entry.wallName)")
+            Text("Wall: \(entry.wallName) • Set: \(entry.setName)")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             if !entry.boulder.notes.isEmpty {
@@ -873,6 +904,7 @@ private struct ActivityLogRow: View {
             onOpen(
                 BoulderPreviewTarget(
                     wallID: summary.wallID,
+                    wallSetID: summary.wallSetID,
                     boulderID: summary.boulder.id
                 )
             )
@@ -887,7 +919,7 @@ private struct ActivityLogRow: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    Text(summary.wallName)
+                    Text("\(summary.wallName) • \(summary.setName)")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 

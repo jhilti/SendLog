@@ -28,6 +28,7 @@ struct WallCanvasView: View {
     var isContourDrawEnabled = false
     var nearestSelectionEnabled = true
     var showInlineContourUndoButton = true
+    var focusesSelectedHolds = true
     var cornerRadius: CGFloat = 14
     var pendingHoldDetectionPoint: CGPoint? = nil
     var onZoomScaleChange: ((CGFloat) -> Void)? = nil
@@ -45,6 +46,9 @@ struct WallCanvasView: View {
     @State private var activeHoldDragTouchOffset: CGSize = .zero
     @State private var activeHoldResizeID: UUID? = nil
     @State private var resizedHoldRect: NormalizedRect? = nil
+    @State private var magnificationStartScale: CGFloat = 1
+    @State private var magnificationStartOffset: CGSize = .zero
+    @State private var reportedZoomIsActive = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -53,6 +57,7 @@ struct WallCanvasView: View {
             let displayScale = isZoomEnabled ? zoomScale : 1
             let displayOffset = isZoomEnabled ? zoomOffset : .zero
             let editableRenderedHold = editableHold.map { renderedHold(for: $0) }
+            let isFocusingSelectedHolds = shouldFocusSelectedHolds
             let baseCanvas = ZStack {
                 Color.black
 
@@ -60,8 +65,31 @@ struct WallCanvasView: View {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFit()
+                        .saturation(isFocusingSelectedHolds ? 0.58 : 1)
+                        .brightness(isFocusingSelectedHolds ? -0.12 : 0)
+                        .blur(radius: isFocusingSelectedHolds ? 1.8 : 0)
                         .frame(width: imageFrame.width, height: imageFrame.height)
                         .position(x: imageFrame.midX, y: imageFrame.midY)
+
+                    if isFocusingSelectedHolds {
+                        Color.black.opacity(0.52)
+                            .frame(width: imageFrame.width, height: imageFrame.height)
+                            .position(x: imageFrame.midX, y: imageFrame.midY)
+
+                        ZStack {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: imageFrame.width, height: imageFrame.height)
+                                .position(x: imageFrame.midX, y: imageFrame.midY)
+                        }
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .mask {
+                            Canvas { context, _ in
+                                drawSelectedHoldFocusMasks(in: &context, imageFrame: imageFrame)
+                            }
+                        }
+                    }
 
                     Canvas { context, _ in
                         drawWallEdges(in: &context, imageFrame: imageFrame)
@@ -75,21 +103,19 @@ struct WallCanvasView: View {
                             guard showsInactiveHolds || isSelected || editableHoldID == hold.id else {
                                 continue
                             }
-                            let selectionColor: Color = isSecondarySelected ? .red : .blue
+                            let selectionColor: Color = isSecondarySelected ? .orange : .cyan
                             let rect = rendered.rect.toCGRect(in: imageFrame)
                             let path = Path(rect)
                             let lineWidth: CGFloat = isSelected ? 2.0 : 1.4
 
                             if isSelected {
-                                context.fill(path, with: .color(selectionColor.opacity(0.18)))
-
-                                context.drawLayer { layerContext in
-                                    layerContext.addFilter(.shadow(color: selectionColor.opacity(0.95), radius: 8, x: 0, y: 0))
-                                    layerContext.stroke(path, with: .color(selectionColor.opacity(0.98)), lineWidth: lineWidth)
-                                }
-
-                                let accentColor: Color = isSecondarySelected ? .orange : .cyan
-                                context.stroke(path, with: .color(accentColor.opacity(0.85)), lineWidth: max(0.7, lineWidth * 0.5))
+                                drawSelectedHoldRing(
+                                    in: &context,
+                                    for: rendered,
+                                    in: imageFrame,
+                                    color: selectionColor,
+                                    isSecondary: isSecondarySelected
+                                )
                             } else {
                                 context.stroke(path, with: .color(.orange.opacity(0.58)), lineWidth: lineWidth)
                             }
@@ -104,7 +130,7 @@ struct WallCanvasView: View {
                             )
                             context.fill(
                                 Path(ellipseIn: centerRect),
-                                with: .color(isSelected ? selectionColor.opacity(0.96) : .orange.opacity(0.92))
+                                with: .color(isSelected ? .white.opacity(0.94) : .orange.opacity(0.92))
                             )
 
                             if editableHoldID == hold.id {
@@ -172,17 +198,17 @@ struct WallCanvasView: View {
                         if zoomScale > 1.01 {
                             baseCanvas
                                 .simultaneousGesture(dragGesture(in: imageFrame))
-                                .simultaneousGesture(magnificationGesture(in: imageFrame))
+                                .simultaneousGesture(magnificationGesture(in: imageFrame, containerSize: geometry.size))
                                 .simultaneousGesture(contourModeToggleGesture)
                         } else {
                             baseCanvas
-                                .simultaneousGesture(magnificationGesture(in: imageFrame))
+                                .simultaneousGesture(magnificationGesture(in: imageFrame, containerSize: geometry.size))
                                 .simultaneousGesture(contourModeToggleGesture)
                         }
                     } else {
                         baseCanvas
                             .highPriorityGesture(contourDrawGesture(in: imageFrame))
-                            .simultaneousGesture(magnificationGesture(in: imageFrame))
+                            .simultaneousGesture(magnificationGesture(in: imageFrame, containerSize: geometry.size))
                             .simultaneousGesture(contourModeToggleGesture)
                     }
                 } else if isZoomEnabled {
@@ -190,11 +216,11 @@ struct WallCanvasView: View {
                         baseCanvas
                             .highPriorityGesture(tapGesture(in: imageFrame))
                             .simultaneousGesture(dragGesture(in: imageFrame))
-                            .simultaneousGesture(magnificationGesture(in: imageFrame))
+                            .simultaneousGesture(magnificationGesture(in: imageFrame, containerSize: geometry.size))
                     } else {
                         baseCanvas
                             .highPriorityGesture(tapGesture(in: imageFrame))
-                            .simultaneousGesture(magnificationGesture(in: imageFrame))
+                            .simultaneousGesture(magnificationGesture(in: imageFrame, containerSize: geometry.size))
                     }
                 } else if hasTapHandlers {
                     if hasEditableHoldInteraction {
@@ -263,7 +289,7 @@ struct WallCanvasView: View {
                 }
             }
             .onAppear {
-                onZoomScaleChange?(isZoomEnabled ? zoomScale : 1)
+                reportZoomActivityIfNeeded(force: true)
             }
         }
         .frame(maxWidth: .infinity)
@@ -312,6 +338,18 @@ struct WallCanvasView: View {
         hasEditableHoldDrag || hasEditableHoldResize
     }
 
+    private var focusedHoldIDs: Set<UUID> {
+        selectedHoldIDs.union(secondarySelectedHoldIDs)
+    }
+
+    private var shouldFocusSelectedHolds: Bool {
+        focusesSelectedHolds
+            && !focusedHoldIDs.isEmpty
+            && editableHoldID == nil
+            && !isContourDrawEnabled
+            && draftWallArea.isEmpty
+    }
+
     private var editableHold: Hold? {
         guard let editableHoldID else {
             return nil
@@ -320,12 +358,7 @@ struct WallCanvasView: View {
     }
 
     private var layoutImageSize: CGSize {
-        switch image.imageOrientation {
-        case .left, .leftMirrored, .right, .rightMirrored:
-            return CGSize(width: image.size.height, height: image.size.width)
-        default:
-            return image.size
-        }
+        image.size
     }
 
     private func tapGesture(in imageFrame: CGRect) -> some Gesture {
@@ -390,6 +423,11 @@ struct WallCanvasView: View {
             onEmptyImageDoubleTap(normalizedPoint)
             return
         }
+
+        if isDoubleTap, isZoomEnabled {
+            toggleZoom(around: unscaledLocation, in: imageFrame)
+            return
+        }
         onEmptyImageTap?(normalizedPoint)
     }
 
@@ -440,7 +478,7 @@ struct WallCanvasView: View {
     }
 
     private func dragGesture(in imageFrame: CGRect) -> some Gesture {
-        DragGesture(minimumDistance: hasEditableHoldInteraction ? 0 : 8, coordinateSpace: .local)
+        DragGesture(minimumDistance: dragMinimumDistance, coordinateSpace: .local)
             .onChanged { value in
                 if handleEditableHoldDragChanged(value, in: imageFrame) {
                     return
@@ -489,18 +527,35 @@ struct WallCanvasView: View {
             }
     }
 
-    private func magnificationGesture(in imageFrame: CGRect) -> some Gesture {
-        MagnificationGesture()
+    private var dragMinimumDistance: CGFloat {
+        if hasEditableHoldInteraction || zoomScale > 1.01 {
+            return 0
+        }
+        return 8
+    }
+
+    private func magnificationGesture(in imageFrame: CGRect, containerSize: CGSize) -> some Gesture {
+        MagnifyGesture()
             .onChanged { value in
                 guard isZoomEnabled else {
                     return
                 }
 
+                if !isMagnifying {
+                    magnificationStartScale = zoomScale
+                    magnificationStartOffset = zoomOffset
+                }
+
                 isMagnifying = true
-                let proposedScale = clampedScale(storedZoomScale * value)
+                let proposedScale = clampedScale(magnificationStartScale * value.magnification)
+                let anchor = gestureAnchorPoint(value.startAnchor, in: containerSize, imageFrame: imageFrame)
                 zoomScale = proposedScale
-                zoomOffset = clampedOffset(zoomOffset, for: proposedScale, imageFrame: imageFrame)
-                onZoomScaleChange?(proposedScale)
+                zoomOffset = clampedOffset(
+                    offsetKeeping(anchor, fixedFrom: magnificationStartScale, to: proposedScale, startOffset: magnificationStartOffset, imageFrame: imageFrame),
+                    for: proposedScale,
+                    imageFrame: imageFrame
+                )
+                reportZoomActivityIfNeeded()
             }
             .onEnded { value in
                 guard isZoomEnabled else {
@@ -508,16 +563,24 @@ struct WallCanvasView: View {
                 }
 
                 isMagnifying = false
-                zoomScale = clampedScale(storedZoomScale * value)
-                zoomOffset = clampedOffset(zoomOffset, for: zoomScale, imageFrame: imageFrame)
+                let proposedScale = clampedScale(magnificationStartScale * value.magnification)
+                let anchor = gestureAnchorPoint(value.startAnchor, in: containerSize, imageFrame: imageFrame)
+                zoomScale = proposedScale
+                zoomOffset = clampedOffset(
+                    offsetKeeping(anchor, fixedFrom: magnificationStartScale, to: proposedScale, startOffset: magnificationStartOffset, imageFrame: imageFrame),
+                    for: proposedScale,
+                    imageFrame: imageFrame
+                )
                 storedZoomScale = zoomScale
                 storedZoomOffset = zoomOffset
+                magnificationStartScale = zoomScale
+                magnificationStartOffset = zoomOffset
                 lastTransformEndedAt = Date()
-                onZoomScaleChange?(zoomScale)
 
                 if zoomScale <= 1.01 {
-                    resetZoom()
+                    resetZoom(animated: true)
                 }
+                reportZoomActivityIfNeeded(force: true)
             }
     }
 
@@ -745,6 +808,52 @@ struct WallCanvasView: View {
         let baseRect = hold.rect.toCGRect(in: imageFrame)
         let padding = max(6, min(baseRect.width, baseRect.height) * 0.2)
         return baseRect.insetBy(dx: -padding, dy: -padding)
+    }
+
+    private func holdFocusEllipseRect(for hold: Hold, in imageFrame: CGRect) -> CGRect {
+        let baseRect = hold.rect.toCGRect(in: imageFrame)
+        let center = CGPoint(x: baseRect.midX, y: baseRect.midY)
+        let diameter = max(baseRect.width, baseRect.height) + max(18, min(baseRect.width, baseRect.height) * 0.9)
+        return CGRect(
+            x: center.x - (diameter / 2),
+            y: center.y - (diameter / 2),
+            width: diameter,
+            height: diameter
+        )
+    }
+
+    private func drawSelectedHoldFocusMasks(in context: inout GraphicsContext, imageFrame: CGRect) {
+        for hold in holds where focusedHoldIDs.contains(hold.id) {
+            let focusRect = holdFocusEllipseRect(for: renderedHold(for: hold), in: imageFrame)
+            let outerRect = focusRect.insetBy(dx: -10, dy: -10)
+
+            context.fill(Path(ellipseIn: outerRect), with: .color(.white.opacity(0.28)))
+            context.fill(Path(ellipseIn: focusRect), with: .color(.white))
+        }
+    }
+
+    private func drawSelectedHoldRing(
+        in context: inout GraphicsContext,
+        for hold: Hold,
+        in imageFrame: CGRect,
+        color: Color,
+        isSecondary: Bool
+    ) {
+        let focusRect = holdFocusEllipseRect(for: hold, in: imageFrame)
+        let ringPath = Path(ellipseIn: focusRect)
+        let innerColor: Color = isSecondary ? .red : .white
+
+        context.drawLayer { layerContext in
+            layerContext.addFilter(.shadow(color: color.opacity(0.95), radius: 10, x: 0, y: 0))
+            layerContext.stroke(ringPath, with: .color(color.opacity(0.9)), lineWidth: 3.0)
+        }
+
+        context.stroke(ringPath, with: .color(.white.opacity(0.9)), lineWidth: 1.3)
+        context.stroke(
+            Path(ellipseIn: focusRect.insetBy(dx: 4, dy: 4)),
+            with: .color(innerColor.opacity(0.72)),
+            lineWidth: 0.9
+        )
     }
 
     private func drawGlowingMarker(
@@ -1071,12 +1180,86 @@ struct WallCanvasView: View {
         )
     }
 
-    private func resetZoom() {
-        zoomScale = 1
-        storedZoomScale = 1
-        zoomOffset = .zero
-        storedZoomOffset = .zero
-        onZoomScaleChange?(1)
+    private func gestureAnchorPoint(_ anchor: UnitPoint, in containerSize: CGSize, imageFrame: CGRect) -> CGPoint {
+        let point = CGPoint(
+            x: anchor.x * containerSize.width,
+            y: anchor.y * containerSize.height
+        )
+
+        guard imageFrame.contains(point) else {
+            return CGPoint(x: imageFrame.midX, y: imageFrame.midY)
+        }
+        return point
+    }
+
+    private func offsetKeeping(
+        _ anchor: CGPoint,
+        fixedFrom startScale: CGFloat,
+        to targetScale: CGFloat,
+        startOffset: CGSize,
+        imageFrame: CGRect
+    ) -> CGSize {
+        let center = CGPoint(x: imageFrame.midX, y: imageFrame.midY)
+        let safeStartScale = max(startScale, 0.0001)
+        let pointUnderAnchor = CGPoint(
+            x: center.x + ((anchor.x - startOffset.width - center.x) / safeStartScale),
+            y: center.y + ((anchor.y - startOffset.height - center.y) / safeStartScale)
+        )
+
+        return CGSize(
+            width: anchor.x - center.x - ((pointUnderAnchor.x - center.x) * targetScale),
+            height: anchor.y - center.y - ((pointUnderAnchor.y - center.y) * targetScale)
+        )
+    }
+
+    private func toggleZoom(around location: CGPoint, in imageFrame: CGRect) {
+        if zoomScale > 1.01 {
+            resetZoom(animated: true)
+            return
+        }
+
+        let targetScale: CGFloat = 2.4
+        let targetOffset = clampedOffset(
+            offsetKeeping(location, fixedFrom: 1, to: targetScale, startOffset: .zero, imageFrame: imageFrame),
+            for: targetScale,
+            imageFrame: imageFrame
+        )
+
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+            zoomScale = targetScale
+            storedZoomScale = targetScale
+            zoomOffset = targetOffset
+            storedZoomOffset = targetOffset
+        }
+        reportZoomActivityIfNeeded(force: true)
+    }
+
+    private func resetZoom(animated: Bool = false) {
+        let updates = {
+            zoomScale = 1
+            storedZoomScale = 1
+            zoomOffset = .zero
+            storedZoomOffset = .zero
+            magnificationStartScale = 1
+            magnificationStartOffset = .zero
+        }
+
+        if animated {
+            withAnimation(.spring(response: 0.26, dampingFraction: 0.9), updates)
+        } else {
+            updates()
+        }
+        reportZoomActivityIfNeeded(force: true)
+    }
+
+    private func reportZoomActivityIfNeeded(force: Bool = false) {
+        let isActive = isZoomEnabled && zoomScale > 1.01
+        guard force || isActive != reportedZoomIsActive else {
+            return
+        }
+
+        reportedZoomIsActive = isActive
+        onZoomScaleChange?(isActive ? zoomScale : 1)
     }
 
     private func aspectFitRect(for imageSize: CGSize, in containerSize: CGSize) -> CGRect {
