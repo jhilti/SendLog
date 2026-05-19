@@ -11,6 +11,7 @@ struct WallCanvasView: View {
     var wallEdges: [[NormalizedPoint]] = []
     var draftWallArea: [NormalizedPoint] = []
     var secondarySelectedHoldIDs: Set<UUID> = []
+    var holdUsageIntensities: [UUID: Double] = [:]
     var showsInactiveHolds = true
     var editableHoldID: UUID? = nil
     var onHoldTap: ((Hold) -> Void)?
@@ -67,7 +68,7 @@ struct WallCanvasView: View {
                         .scaledToFit()
                         .saturation(isFocusingSelectedHolds ? 0.58 : 1)
                         .brightness(isFocusingSelectedHolds ? -0.12 : 0)
-                        .blur(radius: isFocusingSelectedHolds ? 1.8 : 0)
+                        .blur(radius: isFocusingSelectedHolds ? 0.7 : 0)
                         .frame(width: imageFrame.width, height: imageFrame.height)
                         .position(x: imageFrame.midX, y: imageFrame.midY)
 
@@ -113,9 +114,15 @@ struct WallCanvasView: View {
                                     in: &context,
                                     for: rendered,
                                     in: imageFrame,
-                                    color: selectionColor,
-                                    isSecondary: isSecondarySelected
+                                    color: selectionColor
                                 )
+                            } else if let usageIntensity = holdUsageIntensities[hold.id] {
+                                let usageColor = holdUsageColor(for: usageIntensity)
+                                context.drawLayer { layerContext in
+                                    layerContext.addFilter(.shadow(color: usageColor.opacity(0.72), radius: 5, x: 0, y: 0))
+                                    layerContext.stroke(path, with: .color(usageColor.opacity(0.96)), lineWidth: 2.2)
+                                }
+                                context.fill(path, with: .color(usageColor.opacity(0.22)))
                             } else {
                                 context.stroke(path, with: .color(.orange.opacity(0.58)), lineWidth: lineWidth)
                             }
@@ -128,10 +135,14 @@ struct WallCanvasView: View {
                                 width: centerDotDiameter,
                                 height: centerDotDiameter
                             )
-                            context.fill(
-                                Path(ellipseIn: centerRect),
-                                with: .color(isSelected ? .white.opacity(0.94) : .orange.opacity(0.92))
-                            )
+                            if !isSelected {
+                                let dotColor = holdUsageIntensities[hold.id].map(holdUsageColor(for:)) ?? .orange
+                                let dotOpacity = holdUsageIntensities[hold.id] == nil ? 0.92 : 0.98
+                                context.fill(
+                                    Path(ellipseIn: centerRect),
+                                    with: .color(dotColor.opacity(dotOpacity))
+                                )
+                            }
 
                             if editableHoldID == hold.id {
                                 let highlightRect = holdHighlightRect(for: rendered, in: imageFrame)
@@ -836,24 +847,37 @@ struct WallCanvasView: View {
         in context: inout GraphicsContext,
         for hold: Hold,
         in imageFrame: CGRect,
-        color: Color,
-        isSecondary: Bool
+        color: Color
     ) {
         let focusRect = holdFocusEllipseRect(for: hold, in: imageFrame)
         let ringPath = Path(ellipseIn: focusRect)
-        let innerColor: Color = isSecondary ? .red : .white
 
         context.drawLayer { layerContext in
             layerContext.addFilter(.shadow(color: color.opacity(0.95), radius: 10, x: 0, y: 0))
             layerContext.stroke(ringPath, with: .color(color.opacity(0.9)), lineWidth: 3.0)
         }
+    }
 
-        context.stroke(ringPath, with: .color(.white.opacity(0.9)), lineWidth: 1.3)
-        context.stroke(
-            Path(ellipseIn: focusRect.insetBy(dx: 4, dy: 4)),
-            with: .color(innerColor.opacity(0.72)),
-            lineWidth: 0.9
-        )
+    private func holdUsageColor(for intensity: Double) -> Color {
+        let clamped = min(max(intensity, 0), 1)
+        switch clamped {
+        case 0:
+            return Color(.systemGray3)
+        case ..<0.5:
+            let progress = clamped / 0.5
+            return Color(
+                red: 0.10 + (0.92 * progress),
+                green: 0.56 + (0.26 * progress),
+                blue: 0.95 - (0.75 * progress)
+            )
+        default:
+            let progress = (clamped - 0.5) / 0.5
+            return Color(
+                red: 1.0,
+                green: 0.82 - (0.54 * progress),
+                blue: 0.20 - (0.12 * progress)
+            )
+        }
     }
 
     private func drawGlowingMarker(

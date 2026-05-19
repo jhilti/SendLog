@@ -241,6 +241,11 @@ struct WallLibraryView: View {
                 }
                 .listStyle(.plain)
             }
+        } else if selectedTab == .analysis {
+            AnalysisView(
+                walls: store.walls,
+                imageForSet: { set in store.image(for: set) }
+            )
         } else {
             if allLogDateGroups.isEmpty {
                 ContentUnavailableView(
@@ -582,6 +587,7 @@ struct WallLibraryView: View {
 private enum LibraryTab: String, CaseIterable, Identifiable {
     case walls = "Walls"
     case problems = "Problems"
+    case analysis = "Analysis"
     case logs = "Log"
 
     var id: String { rawValue }
@@ -592,6 +598,8 @@ private enum LibraryTab: String, CaseIterable, Identifiable {
             return "Search walls"
         case .problems:
             return "Search problems or wall"
+        case .analysis:
+            return "Search analysis"
         case .logs:
             return "Search dates, sessions, problems, or wall"
         }
@@ -755,6 +763,246 @@ private struct WallRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+private struct AnalysisView: View {
+    let walls: [Wall]
+    let imageForSet: (WallSet) -> UIImage?
+
+    @State private var selectedWallID: UUID?
+    @State private var selectedSetID: UUID?
+
+    var body: some View {
+        Group {
+            if walls.isEmpty {
+                ContentUnavailableView(
+                    "No Walls to Analyze",
+                    systemImage: "chart.xyaxis.line",
+                    description: Text("Create a wall and add problems to see hold usage.")
+                )
+            } else if let wall = selectedWall, let set = selectedSet(for: wall) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        analysisControls(wall: wall)
+                        HoldUsageCard(wall: wall, set: set, image: imageForSet(set))
+                    }
+                    .padding(.horizontal)
+                    .padding(.bottom, 24)
+                }
+            }
+        }
+        .onAppear(perform: ensureSelection)
+        .onChange(of: walls) { _, _ in
+            ensureSelection()
+        }
+    }
+
+    private var selectedWall: Wall? {
+        if let selectedWallID,
+           let wall = walls.first(where: { $0.id == selectedWallID }) {
+            return wall
+        }
+        return walls.first
+    }
+
+    private func selectedSet(for wall: Wall) -> WallSet? {
+        if let selectedSetID,
+           let set = wall.sets.first(where: { $0.id == selectedSetID }) {
+            return set
+        }
+        return wall.sets.first(where: { $0.id == wall.activeSetID }) ?? wall.sets.first
+    }
+
+    private func analysisControls(wall: Wall) -> some View {
+        VStack(spacing: 10) {
+            Picker("Wall", selection: wallSelection) {
+                ForEach(walls) { wall in
+                    Text(wall.name).tag(Optional(wall.id))
+                }
+            }
+            .pickerStyle(.menu)
+
+            Picker("Set", selection: setSelection(for: wall)) {
+                ForEach(wall.sets) { set in
+                    Text(set.name).tag(Optional(set.id))
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+        .padding(.top, 4)
+    }
+
+    private var wallSelection: Binding<UUID?> {
+        Binding(
+            get: { selectedWall?.id },
+            set: { wallID in
+                selectedWallID = wallID
+                if let wallID, let wall = walls.first(where: { $0.id == wallID }) {
+                    selectedSetID = wall.activeSetID
+                } else {
+                    selectedSetID = nil
+                }
+            }
+        )
+    }
+
+    private func setSelection(for wall: Wall) -> Binding<UUID?> {
+        Binding(
+            get: { selectedSet(for: wall)?.id },
+            set: { selectedSetID = $0 }
+        )
+    }
+
+    private func ensureSelection() {
+        guard let wall = selectedWall else {
+            selectedWallID = nil
+            selectedSetID = nil
+            return
+        }
+
+        selectedWallID = wall.id
+        if selectedSet(for: wall) == nil {
+            selectedSetID = wall.activeSetID
+        } else {
+            selectedSetID = selectedSet(for: wall)?.id
+        }
+    }
+}
+
+private struct HoldUsageCard: View {
+    let wall: Wall
+    let set: WallSet
+    let image: UIImage?
+
+    private var usageCounts: [UUID: Int] {
+        var counts: [UUID: Int] = [:]
+        for boulder in set.boulders {
+            for holdID in Set(boulder.holdIDs) {
+                counts[holdID, default: 0] += 1
+            }
+        }
+        return counts
+    }
+
+    private var maxUsageCount: Int {
+        usageCounts.values.max() ?? 0
+    }
+
+    private var usedHoldCount: Int {
+        usageCounts.values.filter { $0 > 0 }.count
+    }
+
+    private var holdUsageIntensities: [UUID: Double] {
+        let maxCount = maxUsageCount
+        guard maxCount > 0 else {
+            return Dictionary(uniqueKeysWithValues: set.holds.map { ($0.id, 0) })
+        }
+        return Dictionary(uniqueKeysWithValues: set.holds.map { hold in
+            (hold.id, Double(usageCounts[hold.id] ?? 0) / Double(maxCount))
+        })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Hold Usage")
+                        .font(.headline)
+                    Text("\(wall.name) • \(set.name)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(maxUsageCount > 0 ? "Max \(maxUsageCount)x" : "No usage")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            if let image {
+                WallCanvasView(
+                    image: image,
+                    holds: set.holds,
+                    selectedHoldIDs: [],
+                    wallEdges: set.wallEdges,
+                    holdUsageIntensities: holdUsageIntensities,
+                    showsInactiveHolds: true,
+                    isZoomEnabled: true,
+                    focusesSelectedHolds: false,
+                    cornerRadius: 10
+                )
+            } else {
+                ContentUnavailableView(
+                    "Image Not Available",
+                    systemImage: "photo",
+                    description: Text("Could not load this set image.")
+                )
+                .frame(minHeight: 220)
+            }
+
+            HoldUsageLegend()
+
+            HStack(spacing: 10) {
+                AnalysisStatPill(title: "Problems", value: "\(set.boulders.count)")
+                AnalysisStatPill(title: "Used Holds", value: "\(usedHoldCount)/\(set.holds.count)")
+                AnalysisStatPill(title: "Unused", value: "\(max(set.holds.count - usedHoldCount, 0))")
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
+    }
+}
+
+private struct HoldUsageLegend: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("Low")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            LinearGradient(
+                colors: [
+                    Color(.systemGray3),
+                    Color(red: 0.10, green: 0.56, blue: 0.95),
+                    Color(red: 1.0, green: 0.82, blue: 0.20),
+                    Color(red: 1.0, green: 0.28, blue: 0.08)
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(height: 8)
+            .clipShape(Capsule())
+
+            Text("High")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct AnalysisStatPill: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(.tertiarySystemBackground))
+        )
     }
 }
 

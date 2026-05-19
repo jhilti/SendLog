@@ -23,6 +23,9 @@ struct WallDetailView: View {
     @State private var editingBoulder: Boulder?
     @State private var errorMessage: String?
     @State private var wallCanvasZoomScale: CGFloat = 1
+    @State private var draftWallName = ""
+    @State private var isShowingWallTools = false
+    @FocusState private var isWallNameFocused: Bool
 
     var body: some View {
         ZStack {
@@ -31,7 +34,7 @@ struct WallDetailView: View {
             Group {
                 if let wall = store.wall(withID: wallID), let image = store.image(for: wall) {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 8) {
                             WallCanvasView(
                                 image: image,
                                 holds: wall.holds,
@@ -72,36 +75,26 @@ struct WallDetailView: View {
                                 }
                             )
 
-                            controlPanel(for: wall)
+                            wallToolsToggle
                                 .padding(.horizontal)
+
+                            if isShowingWallTools {
+                                controlPanel(for: wall)
+                                    .padding(.horizontal)
+                            }
 
                             if wall.sets.count > 1 {
                                 setPicker(for: wall)
                                     .padding(.horizontal)
                             }
 
-                            VStack(alignment: .leading, spacing: 16) {
+                            VStack(alignment: .leading, spacing: 10) {
                                 HStack(alignment: .firstTextBaseline) {
                                     Text("Problems")
                                         .font(.title3.weight(.semibold))
 
                                     Spacer()
-
-                                    Button {
-                                        isShowingBoulderImport = true
-                                    } label: {
-                                        Label("Import From Other Walls", systemImage: "square.and.arrow.down")
-                                            .lineLimit(1)
-                                            .minimumScaleFactor(0.8)
-                                    }
-                                    .font(.subheadline.weight(.semibold))
-                                    .buttonStyle(.bordered)
-                                    .disabled(wall.holds.isEmpty)
                                 }
-
-                                Text("Tap a problem to preview its selected holds.")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
 
                                 if wall.boulders.isEmpty {
                                     Text("No saved problems yet.")
@@ -131,9 +124,13 @@ struct WallDetailView: View {
                         .padding(.bottom, 40)
                     }
                     .scrollDisabled(wallCanvasZoomScale > 1.01)
-                    .navigationTitle(wall.name)
+                    .navigationTitle("")
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
+                        ToolbarItem(placement: .principal) {
+                            wallNameField(for: wall)
+                        }
+
                         ToolbarItemGroup(placement: .topBarTrailing) {
                             Menu {
                                 ForEach(wall.sets) { set in
@@ -161,6 +158,14 @@ struct WallDetailView: View {
                                 Label("New Problem", systemImage: "plus")
                             }
                             .disabled(wall.holds.isEmpty)
+                        }
+                    }
+                    .onAppear {
+                        draftWallName = wall.name
+                    }
+                    .onChange(of: wall.name) { _, newName in
+                        if !isWallNameFocused {
+                            draftWallName = newName
                         }
                     }
                     .fullScreenCover(isPresented: $isCreatingBoulder) {
@@ -226,6 +231,44 @@ struct WallDetailView: View {
         }
     }
 
+    private var wallToolsToggle: some View {
+        HStack {
+            Spacer()
+
+            Button {
+                toggleWallTools()
+            } label: {
+                Image(systemName: isShowingWallTools ? "xmark" : "slider.horizontal.3")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(width: 34, height: 34)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityLabel(isShowingWallTools ? "Hide wall tools" : "Show wall tools")
+            .disabled(isDetectingHolds || isFittingHold)
+        }
+    }
+
+    private func wallNameField(for wall: Wall) -> some View {
+        TextField("Wall name", text: $draftWallName)
+            .font(.headline.weight(.semibold))
+            .multilineTextAlignment(.center)
+            .textInputAutocapitalization(.words)
+            .autocorrectionDisabled()
+            .submitLabel(.done)
+            .frame(width: 190)
+            .focused($isWallNameFocused)
+            .onSubmit {
+                saveWallName(currentName: wall.name)
+            }
+            .onChange(of: isWallNameFocused) { _, isFocused in
+                if isFocused {
+                    draftWallName = wall.name
+                } else {
+                    saveWallName(currentName: wall.name)
+                }
+            }
+    }
+
     @ViewBuilder
     private func controlPanel(for wall: Wall) -> some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -235,27 +278,31 @@ struct WallDetailView: View {
                 } label: {
                     Label(holdDetectionButtonTitle(for: wall), systemImage: "sparkles")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(WallToolButtonStyle(tone: .primary))
                 .disabled(isDetectingHolds || isFittingHold || isEditingWallArea)
 
-                Button(isEditingHolds ? "Done Editing" : "Edit Holds") {
+                Button {
                     withAnimation {
                         isEditingHolds.toggle()
                         if !isEditingHolds {
                             selectedEditableHoldID = nil
                         }
                     }
+                } label: {
+                    Label(isEditingHolds ? "Done Editing" : "Edit Holds", systemImage: "pencil")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(WallToolButtonStyle(tone: .neutral))
                 .disabled(isDetectingHolds || isFittingHold || isEditingWallArea)
             }
 
             if isEditingWallArea {
                 VStack(alignment: .leading, spacing: 10) {
-                    Button("Save Wall Area") {
+                    Button {
                         saveWallArea()
+                    } label: {
+                        Label("Save Wall Area", systemImage: "checkmark")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(WallToolButtonStyle(tone: .primary))
                     .disabled(draftWallAreaPoints.count < 3)
 
                     HStack(spacing: 10) {
@@ -264,21 +311,25 @@ struct WallDetailView: View {
                         } label: {
                             Label("Undo Point", systemImage: "arrow.uturn.backward")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(WallToolButtonStyle(tone: .neutral))
                         .disabled(draftWallAreaPoints.isEmpty)
 
-                        Button("Cancel") {
+                        Button {
                             cancelWallAreaEditing()
+                        } label: {
+                            Label("Cancel", systemImage: "xmark")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(WallToolButtonStyle(tone: .neutral))
                     }
                 }
             } else {
                 HStack(spacing: 10) {
-                    Button("Set Wall Area") {
+                    Button {
                         startWallAreaEditing(from: wall)
+                    } label: {
+                        Label("Set Wall Area", systemImage: "crop")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(WallToolButtonStyle(tone: .neutral))
                     .disabled(isDetectingHolds || isFittingHold || isEditingHolds)
 
                     if !wall.wallEdges.isEmpty {
@@ -287,7 +338,7 @@ struct WallDetailView: View {
                         } label: {
                             Label("Clear Wall Area", systemImage: "trash")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(WallToolButtonStyle(tone: .destructive))
                         .disabled(isDetectingHolds || isFittingHold || isEditingHolds)
                     }
                 }
@@ -296,11 +347,11 @@ struct WallDetailView: View {
             if isEditingWallArea {
                 Text("Tap directly on the wall edge corners in order. Boundary holds get a small detection margin.")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.72))
             } else if !wall.wallEdges.isEmpty {
                 Text("Wall area active: hold detection is filtered to the marked polygon.")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.72))
             }
 
             if isEditingHolds {
@@ -311,11 +362,11 @@ struct WallDetailView: View {
                         Text("Fitting hold...")
                             .font(.footnote.weight(.semibold))
                     }
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.72))
                 } else {
                     Text("Tap an unmarked hold to auto-fit a box. Tap a marked box to select it. Use the corner controls to delete, move, or resize.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.white.opacity(0.72))
                 }
 
                 if !wall.holds.isEmpty {
@@ -324,14 +375,34 @@ struct WallDetailView: View {
                     } label: {
                         Label("Delete All Holds", systemImage: "trash")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(WallToolButtonStyle(tone: .destructive))
                     .disabled(isFittingHold)
                 }
             }
 
             Text("\(wall.holds.count) holds marked")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.white.opacity(0.76))
+
+            Button {
+                isShowingBoulderImport = true
+            } label: {
+                Label("Import From Other Walls", systemImage: "square.and.arrow.down")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .buttonStyle(WallToolButtonStyle(tone: .neutral))
+            .disabled(wall.holds.isEmpty)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(Color.white.opacity(0.055))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
         }
     }
 
@@ -381,6 +452,47 @@ struct WallDetailView: View {
                 editingBoulder = nil
             } catch {
                 errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func toggleWallTools() {
+        withAnimation {
+            if isShowingWallTools {
+                if isEditingWallArea {
+                    isEditingWallArea = false
+                    draftWallAreaPoints = []
+                }
+                isEditingHolds = false
+                selectedEditableHoldID = nil
+            }
+
+            isShowingWallTools.toggle()
+        }
+    }
+
+    private func saveWallName(currentName: String) {
+        let trimmedName = draftWallName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            draftWallName = currentName
+            return
+        }
+        guard trimmedName != currentName else {
+            draftWallName = trimmedName
+            return
+        }
+
+        Task {
+            do {
+                try await store.updateWallName(wallID: wallID, name: trimmedName)
+                await MainActor.run {
+                    draftWallName = trimmedName
+                }
+            } catch {
+                await MainActor.run {
+                    draftWallName = currentName
+                    errorMessage = error.localizedDescription
+                }
             }
         }
     }
@@ -553,6 +665,100 @@ struct WallDetailView: View {
         }
     }
 
+}
+
+private struct WallToolButtonStyle: ButtonStyle {
+    enum Tone {
+        case primary
+        case neutral
+        case destructive
+    }
+
+    @Environment(\.isEnabled) private var isEnabled
+
+    let tone: Tone
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.78)
+            .foregroundStyle(foregroundColor)
+            .padding(.horizontal, 16)
+            .frame(height: 46)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(backgroundColor)
+            )
+            .overlay {
+                Capsule(style: .continuous)
+                    .stroke(borderColor, lineWidth: 1)
+            }
+            .shadow(color: shadowColor, radius: isEnabled ? 10 : 0, x: 0, y: 5)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.86 : 1)
+            .animation(.spring(response: 0.22, dampingFraction: 0.78), value: configuration.isPressed)
+    }
+
+    private var foregroundColor: Color {
+        guard isEnabled else {
+            return .white.opacity(0.6)
+        }
+
+        switch tone {
+        case .primary:
+            return .white
+        case .neutral:
+            return .white.opacity(0.9)
+        case .destructive:
+            return Color(red: 1, green: 0.34, blue: 0.34)
+        }
+    }
+
+    private var backgroundColor: Color {
+        guard isEnabled else {
+            return .white.opacity(0.095)
+        }
+
+        switch tone {
+        case .primary:
+            return Color(red: 0.20, green: 0.44, blue: 0.28)
+        case .neutral:
+            return .white.opacity(0.105)
+        case .destructive:
+            return Color(red: 0.22, green: 0.05, blue: 0.06)
+        }
+    }
+
+    private var borderColor: Color {
+        guard isEnabled else {
+            return .white.opacity(0.1)
+        }
+
+        switch tone {
+        case .primary:
+            return Color(red: 0.45, green: 0.78, blue: 0.54).opacity(0.32)
+        case .neutral:
+            return .white.opacity(0.11)
+        case .destructive:
+            return Color(red: 1, green: 0.34, blue: 0.34).opacity(0.28)
+        }
+    }
+
+    private var shadowColor: Color {
+        guard isEnabled else {
+            return .clear
+        }
+
+        switch tone {
+        case .primary:
+            return Color(red: 0.10, green: 0.35, blue: 0.18).opacity(0.35)
+        case .neutral:
+            return .black.opacity(0.16)
+        case .destructive:
+            return Color(red: 0.36, green: 0, blue: 0).opacity(0.28)
+        }
+    }
 }
 
 private struct CreateWallSetSheet: View {

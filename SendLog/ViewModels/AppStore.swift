@@ -51,13 +51,79 @@ private struct HoldGeometryTransform {
     let d: CGFloat
     let tx: CGFloat
     let ty: CGFloat
+    let g: CGFloat
+    let h: CGFloat
+    let w: CGFloat
+
+    init(
+        a: CGFloat,
+        b: CGFloat,
+        c: CGFloat,
+        d: CGFloat,
+        tx: CGFloat,
+        ty: CGFloat,
+        g: CGFloat = 0,
+        h: CGFloat = 0,
+        w: CGFloat = 1
+    ) {
+        self.a = a
+        self.b = b
+        self.c = c
+        self.d = d
+        self.tx = tx
+        self.ty = ty
+        self.g = g
+        self.h = h
+        self.w = w
+    }
 
     static let identity = HoldGeometryTransform(a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0)
 
     func applying(to point: CGPoint) -> CGPoint {
-        CGPoint(
-            x: (a * point.x) + (b * point.y) + tx,
-            y: (c * point.x) + (d * point.y) + ty
+        let denominator = (g * point.x) + (h * point.y) + w
+        guard abs(denominator) > 0.000001 else {
+            return point
+        }
+
+        return CGPoint(
+            x: ((a * point.x) + (b * point.y) + tx) / denominator,
+            y: ((c * point.x) + (d * point.y) + ty) / denominator
+        )
+    }
+
+    func concatenating(after other: HoldGeometryTransform) -> HoldGeometryTransform? {
+        normalized(
+            a: (a * other.a) + (b * other.c) + (tx * other.g),
+            b: (a * other.b) + (b * other.d) + (tx * other.h),
+            c: (c * other.a) + (d * other.c) + (ty * other.g),
+            d: (c * other.b) + (d * other.d) + (ty * other.h),
+            tx: (a * other.tx) + (b * other.ty) + (tx * other.w),
+            ty: (c * other.tx) + (d * other.ty) + (ty * other.w),
+            g: (g * other.a) + (h * other.c) + (w * other.g),
+            h: (g * other.b) + (h * other.d) + (w * other.h),
+            w: (g * other.tx) + (h * other.ty) + (w * other.w)
+        )
+    }
+
+    func inverted() -> HoldGeometryTransform? {
+        let determinant = a * ((d * w) - (ty * h))
+            - b * ((c * w) - (ty * g))
+            + tx * ((c * h) - (d * g))
+
+        guard abs(determinant) > 0.000001 else {
+            return nil
+        }
+
+        return normalized(
+            a: ((d * w) - (ty * h)) / determinant,
+            b: ((tx * h) - (b * w)) / determinant,
+            c: ((ty * g) - (c * w)) / determinant,
+            d: ((a * w) - (tx * g)) / determinant,
+            tx: ((b * ty) - (tx * d)) / determinant,
+            ty: ((tx * c) - (a * ty)) / determinant,
+            g: ((c * h) - (d * g)) / determinant,
+            h: ((b * g) - (a * h)) / determinant,
+            w: ((a * d) - (b * c)) / determinant
         )
     }
 
@@ -80,6 +146,33 @@ private struct HoldGeometryTransform {
             width: max(0.01, maxX - minX),
             height: max(0.01, maxY - minY)
         ).clamped()
+    }
+
+    private func normalized(
+        a: CGFloat,
+        b: CGFloat,
+        c: CGFloat,
+        d: CGFloat,
+        tx: CGFloat,
+        ty: CGFloat,
+        g: CGFloat,
+        h: CGFloat,
+        w: CGFloat
+    ) -> HoldGeometryTransform? {
+        guard abs(w) > 0.000001 else {
+            return nil
+        }
+
+        return HoldGeometryTransform(
+            a: a / w,
+            b: b / w,
+            c: c / w,
+            d: d / w,
+            tx: tx / w,
+            ty: ty / w,
+            g: g / w,
+            h: h / w
+        )
     }
 }
 
@@ -479,6 +572,21 @@ final class AppStore: ObservableObject {
         try await persist()
     }
 
+    func updateWallName(wallID: UUID, name: String) async throws {
+        guard let index = wallIndex(for: wallID) else {
+            throw AppStoreError.wallNotFound
+        }
+
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty, trimmedName != walls[index].name else {
+            return
+        }
+
+        walls[index].name = trimmedName
+        walls[index].updatedAt = Date()
+        try await persist()
+    }
+
     func createWallSet(wallID: UUID, name: String, imageData: Data) async throws {
         guard UIImage(data: imageData) != nil else {
             throw AppStoreError.invalidImage
@@ -579,14 +687,16 @@ final class AppStore: ObservableObject {
             throw AppStoreError.missingWallImage
         }
 
-        let requestedTargetCount = targetCount ?? nextHoldDetectionTargetCount(currentHoldCount: walls[index].holds.count)
+        let existingHolds = holdsInsideWallArea(walls[index].holds, wallEdges: walls[index].wallEdges)
+        let requestedTargetCount = targetCount ?? nextHoldDetectionTargetCount(currentHoldCount: existingHolds.count)
         let detectedHolds = try await holdDetector.detectHolds(in: image, targetCount: requestedTargetCount)
         let filteredHolds = holdsInsideWallArea(detectedHolds, wallEdges: walls[index].wallEdges)
-        guard !filteredHolds.isEmpty else {
+        let mergedHolds = mergedDetectedHolds(existingHolds: existingHolds, detectedHolds: filteredHolds)
+        guard !mergedHolds.isEmpty else {
             throw AppStoreError.noHoldsDetected
         }
 
-        walls[index].holds = filteredHolds
+        walls[index].holds = mergedHolds
         walls[index].updatedAt = Date()
         try await persist()
     }
@@ -595,7 +705,18 @@ final class AppStore: ObservableObject {
         guard currentHoldCount > 0 else {
             return 92
         }
-        return 180
+        return min(max(220, currentHoldCount + 192), 640)
+    }
+
+    private func mergedDetectedHolds(existingHolds: [Hold], detectedHolds: [Hold]) -> [Hold] {
+        var mergedHolds = existingHolds
+        for detectedHold in detectedHolds {
+            guard overlappingHold(for: detectedHold, in: mergedHolds) == nil else {
+                continue
+            }
+            mergedHolds.append(detectedHold)
+        }
+        return mergedHolds
     }
 
     func removeLastManualHold(wallID: UUID) async throws {
@@ -812,7 +933,7 @@ final class AppStore: ObservableObject {
                         return []
                     }
 
-                    let transform = bestGeometryTransform(from: sourceSet.holds, to: targetSet.holds)
+                    let transform = bestGeometryTransform(from: sourceSet, to: targetSet)
                     let sourceColorDescriptors = colorDescriptors(for: sourceSet)
                     return sourceSet.boulders.compactMap { boulder in
                         importCandidate(
@@ -1165,15 +1286,23 @@ final class AppStore: ObservableObject {
             .hold
     }
 
-    private func bestGeometryTransform(from sourceHolds: [Hold], to targetHolds: [Hold]) -> HoldGeometryTransform {
-        let candidates = geometryTransformCandidates(from: sourceHolds, to: targetHolds)
+    private func bestGeometryTransform(from sourceSet: WallSet, to targetSet: WallSet) -> HoldGeometryTransform {
+        let sourceHolds = sourceSet.holds
+        let targetHolds = targetSet.holds
+        if let wallAreaTransform = wallAreaProjectiveTransform(from: sourceSet.wallEdges, to: targetSet.wallEdges) {
+            return wallAreaTransform
+        }
+
+        let candidates = geometryTransformCandidates(from: sourceSet, to: targetSet)
         return candidates.max { lhs, rhs in
             geometryTransformScore(lhs, sourceHolds: sourceHolds, targetHolds: targetHolds)
                 < geometryTransformScore(rhs, sourceHolds: sourceHolds, targetHolds: targetHolds)
         } ?? .identity
     }
 
-    private func geometryTransformCandidates(from sourceHolds: [Hold], to targetHolds: [Hold]) -> [HoldGeometryTransform] {
+    private func geometryTransformCandidates(from sourceSet: WallSet, to targetSet: WallSet) -> [HoldGeometryTransform] {
+        let sourceHolds = sourceSet.holds
+        let targetHolds = targetSet.holds
         var candidates: [HoldGeometryTransform] = [.identity]
 
         if let boundsTransform = boundsTransform(from: sourceHolds, to: targetHolds) {
@@ -1225,6 +1354,92 @@ final class AppStore: ObservableObject {
             d: scaleY,
             tx: targetBounds.midX - (sourceBounds.midX * scaleX),
             ty: targetBounds.midY - (sourceBounds.midY * scaleY)
+        )
+    }
+
+    private func wallAreaProjectiveTransform(
+        from sourceWallEdges: [[NormalizedPoint]],
+        to targetWallEdges: [[NormalizedPoint]]
+    ) -> HoldGeometryTransform? {
+        guard let sourceQuad = wallAreaQuad(for: sourceWallEdges),
+              let targetQuad = wallAreaQuad(for: targetWallEdges),
+              let sourceUnitToWall = unitSquareTransform(to: sourceQuad),
+              let sourceWallToUnit = sourceUnitToWall.inverted(),
+              let targetUnitToWall = unitSquareTransform(to: targetQuad) else {
+            return nil
+        }
+
+        return targetUnitToWall.concatenating(after: sourceWallToUnit)
+    }
+
+    private func wallAreaQuad(for wallEdges: [[NormalizedPoint]]) -> [CGPoint]? {
+        let points = wallEdges
+            .filter { $0.count >= 3 }
+            .flatMap { $0.map(\.cgPoint) }
+        guard points.count >= 4 else {
+            return nil
+        }
+
+        guard let topLeft = points.min(by: { ($0.x + $0.y) < ($1.x + $1.y) }),
+              let topRight = points.max(by: { ($0.x - $0.y) < ($1.x - $1.y) }),
+              let bottomRight = points.max(by: { ($0.x + $0.y) < ($1.x + $1.y) }),
+              let bottomLeft = points.min(by: { ($0.x - $0.y) < ($1.x - $1.y) }) else {
+            return nil
+        }
+
+        let quad = [topLeft, topRight, bottomRight, bottomLeft]
+        let uniquePoints = Set(quad.map { "\(Int(($0.x * 100_000).rounded())),\(Int(($0.y * 100_000).rounded()))" })
+        guard uniquePoints.count == 4 else {
+            return nil
+        }
+        return quad
+    }
+
+    private func unitSquareTransform(to quad: [CGPoint]) -> HoldGeometryTransform? {
+        guard quad.count == 4 else {
+            return nil
+        }
+
+        let topLeft = quad[0]
+        let topRight = quad[1]
+        let bottomRight = quad[2]
+        let bottomLeft = quad[3]
+
+        let sx = topLeft.x - topRight.x + bottomRight.x - bottomLeft.x
+        let sy = topLeft.y - topRight.y + bottomRight.y - bottomLeft.y
+
+        if abs(sx) < 0.000001, abs(sy) < 0.000001 {
+            return HoldGeometryTransform(
+                a: topRight.x - topLeft.x,
+                b: bottomLeft.x - topLeft.x,
+                c: topRight.y - topLeft.y,
+                d: bottomLeft.y - topLeft.y,
+                tx: topLeft.x,
+                ty: topLeft.y
+            )
+        }
+
+        let dx1 = topRight.x - bottomRight.x
+        let dx2 = bottomLeft.x - bottomRight.x
+        let dy1 = topRight.y - bottomRight.y
+        let dy2 = bottomLeft.y - bottomRight.y
+        let denominator = (dx1 * dy2) - (dx2 * dy1)
+        guard abs(denominator) > 0.000001 else {
+            return nil
+        }
+
+        let g = ((sx * dy2) - (dx2 * sy)) / denominator
+        let h = ((dx1 * sy) - (sx * dy1)) / denominator
+
+        return HoldGeometryTransform(
+            a: topRight.x - topLeft.x + (g * topRight.x),
+            b: bottomLeft.x - topLeft.x + (h * bottomLeft.x),
+            c: topRight.y - topLeft.y + (g * topRight.y),
+            d: bottomLeft.y - topLeft.y + (h * bottomLeft.y),
+            tx: topLeft.x,
+            ty: topLeft.y,
+            g: g,
+            h: h
         )
     }
 
