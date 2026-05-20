@@ -89,9 +89,10 @@ struct OfflineHoldDetectionService {
         var minPerimeterScale: CGFloat
         var minDimensionScale: CGFloat
 
-        static func profile(for targetCount: Int) -> DetectionProfile {
+        static func profile(for targetCount: Int, aggressiveness: Int) -> DetectionProfile {
             let extraDetectionRatio = Float(min(max(targetCount - 92, 0), 88)) / 88
-            let deepDetectionRatio = Float(min(max(targetCount - 180, 0), 180)) / 180
+            let aggressivenessRatio = Float(min(max(aggressiveness, 0), 2)) / 2
+            let deepDetectionRatio = (Float(min(max(targetCount - 180, 0), 180)) / 180) * aggressivenessRatio
             let deepSizeRelaxation = CGFloat(deepDetectionRatio)
 
             return DetectionProfile(
@@ -99,7 +100,7 @@ struct OfflineHoldDetectionService {
                 minInsideRatio: 0.70 - (0.16 * extraDetectionRatio) - (0.08 * deepDetectionRatio),
                 minFillRatio: 0.055 - (0.030 * extraDetectionRatio) - (0.007 * deepDetectionRatio),
                 minPeakScore: 0.10 - (0.060 * extraDetectionRatio) - (0.015 * deepDetectionRatio),
-                candidateLimit: targetCount > 180 ? 3_600 : (targetCount > 92 ? 1_600 : 700),
+                candidateLimit: targetCount > 180 ? (aggressiveness > 0 ? 3_600 : 1_800) : (targetCount > 92 ? 1_600 : 700),
                 minAreaScale: 1.0 - (0.35 * deepSizeRelaxation),
                 minPerimeterScale: 1.0 - (0.25 * deepSizeRelaxation),
                 minDimensionScale: 1.0 - (0.25 * deepSizeRelaxation)
@@ -137,15 +138,15 @@ struct OfflineHoldDetectionService {
         }
     }
 
-    func detectHolds(in image: UIImage, targetCount: Int = 92) async throws -> [Hold] {
+    func detectHolds(in image: UIImage, targetCount: Int = 92, aggressiveness: Int = 0) async throws -> [Hold] {
         try await Task.detached(priority: .userInitiated) {
-            try Self.detectHoldsSynchronously(in: image, targetCount: targetCount)
+            try Self.detectHoldsSynchronously(in: image, targetCount: targetCount, aggressiveness: aggressiveness)
         }.value
     }
 
     func detectHoldsAndWallEdges(in image: UIImage, targetCount: Int = 92) async throws -> DetectionResult {
         try await Task.detached(priority: .userInitiated) {
-            let holds = try Self.detectHoldsSynchronously(in: image, targetCount: targetCount)
+            let holds = try Self.detectHoldsSynchronously(in: image, targetCount: targetCount, aggressiveness: 0)
             let wallEdges = Self.estimatedWallEdges(from: holds)
             return DetectionResult(holds: holds, wallEdges: wallEdges)
         }.value
@@ -157,9 +158,14 @@ struct OfflineHoldDetectionService {
         }.value
     }
 
-    private static func detectHoldsSynchronously(in image: UIImage, targetCount: Int) throws -> [Hold] {
+    private static func detectHoldsSynchronously(in image: UIImage, targetCount: Int, aggressiveness: Int) throws -> [Hold] {
         let geometry = inputGeometry(for: image, size: inputSize)
-        let candidates = try candidatesSynchronously(in: image, geometry: geometry, targetCount: targetCount)
+        let candidates = try candidatesSynchronously(
+            in: image,
+            geometry: geometry,
+            targetCount: targetCount,
+            aggressiveness: aggressiveness
+        )
         let selected = selectCandidates(candidates, targetCount: targetCount)
         return selected.compactMap { candidate in
             hold(from: candidate, geometry: geometry)
@@ -173,7 +179,7 @@ struct OfflineHoldDetectionService {
         )
         let geometry = inputGeometry(for: image, size: inputSize)
         let displayPoint = geometry.modelPoint(fromNormalizedPoint: point)
-        let candidates = try candidatesSynchronously(in: image, geometry: geometry, targetCount: 180)
+        let candidates = try candidatesSynchronously(in: image, geometry: geometry, targetCount: 180, aggressiveness: 0)
         guard let candidate = candidate(atDisplayPoint: displayPoint, in: candidates) else {
             return nil
         }
@@ -281,7 +287,12 @@ struct OfflineHoldDetectionService {
         return sorted[lowerIndex] + ((sorted[upperIndex] - sorted[lowerIndex]) * fraction)
     }
 
-    private static func candidatesSynchronously(in image: UIImage, geometry: InputGeometry, targetCount: Int) throws -> [Candidate] {
+    private static func candidatesSynchronously(
+        in image: UIImage,
+        geometry: InputGeometry,
+        targetCount: Int,
+        aggressiveness: Int
+    ) throws -> [Candidate] {
         guard let pixelBuffer = pixelBuffer(from: image, size: inputSize, imageRect: geometry.imageRect) else {
             throw DetectionError.imagePreparationFailed
         }
@@ -289,7 +300,7 @@ struct OfflineHoldDetectionService {
             throw DetectionError.imagePreparationFailed
         }
         let sizeConstraints = sizeConstraints()
-        let profile = DetectionProfile.profile(for: targetCount)
+        let profile = DetectionProfile.profile(for: targetCount, aggressiveness: aggressiveness)
 
         let model = try loadModel()
         let input = try MLDictionaryFeatureProvider(dictionary: [
@@ -309,8 +320,12 @@ struct OfflineHoldDetectionService {
             sizeConstraints: sizeConstraints,
             profile: profile
         )
-        if targetCount > 180 {
-            candidates.append(contentsOf: textureSeedCandidates(from: scoreMap, targetCount: targetCount))
+        if targetCount > 180, aggressiveness > 0 {
+            candidates.append(contentsOf: textureSeedCandidates(
+                from: scoreMap,
+                targetCount: targetCount,
+                aggressiveness: aggressiveness
+            ))
         }
         return candidates
     }
@@ -664,12 +679,17 @@ struct OfflineHoldDetectionService {
             .sorted { sortTopToBottom($0, $1) }
     }
 
-    private static func textureSeedCandidates(from scoreMap: ScoreMap, targetCount: Int) -> [Candidate] {
-        let deepDetectionRatio = Float(min(max(targetCount - 180, 0), 180)) / 180
+    private static func textureSeedCandidates(
+        from scoreMap: ScoreMap,
+        targetCount: Int,
+        aggressiveness: Int
+    ) -> [Candidate] {
+        let aggressivenessRatio = Float(min(max(aggressiveness, 1), 2)) / 2
+        let deepDetectionRatio = (Float(min(max(targetCount - 180, 0), 180)) / 180) * aggressivenessRatio
         let threshold = 0.64 - (0.10 * deepDetectionRatio)
         let suppressionRadius = 4
         let scale = CGFloat(inputSize) / CGFloat(protoSize)
-        let maximumCount = min(max(targetCount - 180, 0) * 4, 520)
+        let maximumCount = min(max(targetCount - 180, 0) * (aggressiveness >= 2 ? 4 : 2), aggressiveness >= 2 ? 520 : 220)
 
         var peaks: [(x: Int, y: Int, score: Float)] = []
         peaks.reserveCapacity(maximumCount)

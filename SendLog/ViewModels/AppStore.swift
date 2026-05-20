@@ -461,6 +461,7 @@ final class AppStore: ObservableObject {
     private var sessionStartedAt: Date?
     private var sessionAttemptCount = 0
     private var sessionTickCount = 0
+    private var holdDetectionStagnationByWallID: [UUID: Int] = [:]
 
     init(
         repository: WallRepository = WallRepository(),
@@ -688,24 +689,58 @@ final class AppStore: ObservableObject {
         }
 
         let existingHolds = holdsInsideWallArea(walls[index].holds, wallEdges: walls[index].wallEdges)
-        let requestedTargetCount = targetCount ?? nextHoldDetectionTargetCount(currentHoldCount: existingHolds.count)
-        let detectedHolds = try await holdDetector.detectHolds(in: image, targetCount: requestedTargetCount)
+        let stagnationLevel = targetCount == nil ? holdDetectionStagnationByWallID[wallID, default: 0] : 0
+        let requestedTargetCount = targetCount ?? nextHoldDetectionTargetCount(
+            currentHoldCount: existingHolds.count,
+            stagnationLevel: stagnationLevel
+        )
+        let detectedHolds = try await holdDetector.detectHolds(
+            in: image,
+            targetCount: requestedTargetCount,
+            aggressiveness: stagnationLevel
+        )
         let filteredHolds = holdsInsideWallArea(detectedHolds, wallEdges: walls[index].wallEdges)
         let mergedHolds = mergedDetectedHolds(existingHolds: existingHolds, detectedHolds: filteredHolds)
         guard !mergedHolds.isEmpty else {
             throw AppStoreError.noHoldsDetected
         }
 
+        updateHoldDetectionStagnation(
+            wallID: wallID,
+            existingHoldCount: existingHolds.count,
+            mergedHoldCount: mergedHolds.count
+        )
         walls[index].holds = mergedHolds
         walls[index].updatedAt = Date()
         try await persist()
     }
 
-    private func nextHoldDetectionTargetCount(currentHoldCount: Int) -> Int {
+    private func nextHoldDetectionTargetCount(currentHoldCount: Int, stagnationLevel: Int) -> Int {
         guard currentHoldCount > 0 else {
             return 92
         }
-        return min(max(220, currentHoldCount + 192), 640)
+        switch min(max(stagnationLevel, 0), 2) {
+        case 0:
+            return min(max(180, currentHoldCount + 64), 280)
+        case 1:
+            return min(max(240, currentHoldCount + 144), 420)
+        default:
+            return min(max(320, currentHoldCount + 224), 640)
+        }
+    }
+
+    private func updateHoldDetectionStagnation(wallID: UUID, existingHoldCount: Int, mergedHoldCount: Int) {
+        guard existingHoldCount > 0 else {
+            holdDetectionStagnationByWallID[wallID] = 0
+            return
+        }
+
+        let addedHoldCount = max(0, mergedHoldCount - existingHoldCount)
+        if addedHoldCount <= 2 {
+            holdDetectionStagnationByWallID[wallID] = min(2, holdDetectionStagnationByWallID[wallID, default: 0] + 1)
+        } else if addedHoldCount >= 8 {
+            holdDetectionStagnationByWallID[wallID] = 0
+        }
     }
 
     private func mergedDetectedHolds(existingHolds: [Hold], detectedHolds: [Hold]) -> [Hold] {
