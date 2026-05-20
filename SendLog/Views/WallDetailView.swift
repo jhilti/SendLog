@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import AudioToolbox
+import PhotosUI
 
 struct WallDetailView: View {
     @EnvironmentObject private var store: AppStore
@@ -17,9 +18,14 @@ struct WallDetailView: View {
     @State private var pendingHoldDetectionPoint: CGPoint?
     @State private var isShowingDeleteAllHoldsConfirmation = false
     @State private var isShowingBoulderImport = false
+    @State private var isShowingCreateSet = false
     @State private var previewBoulder: Boulder?
     @State private var editingBoulder: Boulder?
     @State private var errorMessage: String?
+    @State private var wallCanvasZoomScale: CGFloat = 1
+    @State private var draftWallName = ""
+    @State private var isShowingWallTools = false
+    @FocusState private var isWallNameFocused: Bool
 
     var body: some View {
         ZStack {
@@ -28,7 +34,7 @@ struct WallDetailView: View {
             Group {
                 if let wall = store.wall(withID: wallID), let image = store.image(for: wall) {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 8) {
                             WallCanvasView(
                                 image: image,
                                 holds: wall.holds,
@@ -63,34 +69,32 @@ struct WallDetailView: View {
                                 nearestSelectionEnabled: !isEditingHolds,
                                 showInlineContourUndoButton: false,
                                 cornerRadius: 0,
-                                pendingHoldDetectionPoint: pendingHoldDetectionPoint
+                                pendingHoldDetectionPoint: pendingHoldDetectionPoint,
+                                onZoomScaleChange: { scale in
+                                    wallCanvasZoomScale = scale
+                                }
                             )
 
-                            controlPanel(for: wall)
+                            wallToolsToggle
                                 .padding(.horizontal)
 
-                            VStack(alignment: .leading, spacing: 16) {
+                            if isShowingWallTools {
+                                controlPanel(for: wall)
+                                    .padding(.horizontal)
+                            }
+
+                            if wall.sets.count > 1 {
+                                setPicker(for: wall)
+                                    .padding(.horizontal)
+                            }
+
+                            VStack(alignment: .leading, spacing: 10) {
                                 HStack(alignment: .firstTextBaseline) {
                                     Text("Problems")
                                         .font(.title3.weight(.semibold))
 
                                     Spacer()
-
-                                    Button {
-                                        isShowingBoulderImport = true
-                                    } label: {
-                                        Label("Import From Other Walls", systemImage: "square.and.arrow.down")
-                                            .lineLimit(1)
-                                            .minimumScaleFactor(0.8)
-                                    }
-                                    .font(.subheadline.weight(.semibold))
-                                    .buttonStyle(.bordered)
-                                    .disabled(wall.holds.isEmpty)
                                 }
-
-                                Text("Tap a problem to preview its selected holds.")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
 
                                 if wall.boulders.isEmpty {
                                     Text("No saved problems yet.")
@@ -119,10 +123,35 @@ struct WallDetailView: View {
                         .padding(.top, 12)
                         .padding(.bottom, 40)
                     }
-                    .navigationTitle(wall.name)
+                    .scrollDisabled(wallCanvasZoomScale > 1.01)
+                    .navigationTitle("")
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
+                        ToolbarItem(placement: .principal) {
+                            wallNameField(for: wall)
+                        }
+
+                        ToolbarItemGroup(placement: .topBarTrailing) {
+                            Menu {
+                                ForEach(wall.sets) { set in
+                                    Button {
+                                        activateSet(set.id)
+                                    } label: {
+                                        Label(set.name, systemImage: set.id == wall.activeSetID ? "checkmark" : "square")
+                                    }
+                                }
+
+                                Divider()
+
+                                Button {
+                                    isShowingCreateSet = true
+                                } label: {
+                                    Label("New Reset", systemImage: "plus.rectangle.on.rectangle")
+                                }
+                            } label: {
+                                Label("Sets", systemImage: "rectangle.stack")
+                            }
+
                             Button {
                                 isCreatingBoulder = true
                             } label: {
@@ -131,8 +160,20 @@ struct WallDetailView: View {
                             .disabled(wall.holds.isEmpty)
                         }
                     }
+                    .onAppear {
+                        draftWallName = wall.name
+                    }
+                    .onChange(of: wall.name) { _, newName in
+                        if !isWallNameFocused {
+                            draftWallName = newName
+                        }
+                    }
                     .fullScreenCover(isPresented: $isCreatingBoulder) {
                         BoulderComposerView(wallID: wallID)
+                    }
+                    .sheet(isPresented: $isShowingCreateSet) {
+                        CreateWallSetSheet(wallID: wallID)
+                            .environmentObject(store)
                     }
                     .fullScreenCover(item: $editingBoulder) { boulder in
                         BoulderComposerView(wallID: wallID, editingBoulder: boulder)
@@ -190,6 +231,44 @@ struct WallDetailView: View {
         }
     }
 
+    private var wallToolsToggle: some View {
+        HStack {
+            Spacer()
+
+            Button {
+                toggleWallTools()
+            } label: {
+                Image(systemName: isShowingWallTools ? "xmark" : "slider.horizontal.3")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(width: 34, height: 34)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityLabel(isShowingWallTools ? "Hide wall tools" : "Show wall tools")
+            .disabled(isDetectingHolds || isFittingHold)
+        }
+    }
+
+    private func wallNameField(for wall: Wall) -> some View {
+        TextField("Wall name", text: $draftWallName)
+            .font(.headline.weight(.semibold))
+            .multilineTextAlignment(.center)
+            .textInputAutocapitalization(.words)
+            .autocorrectionDisabled()
+            .submitLabel(.done)
+            .frame(width: 190)
+            .focused($isWallNameFocused)
+            .onSubmit {
+                saveWallName(currentName: wall.name)
+            }
+            .onChange(of: isWallNameFocused) { _, isFocused in
+                if isFocused {
+                    draftWallName = wall.name
+                } else {
+                    saveWallName(currentName: wall.name)
+                }
+            }
+    }
+
     @ViewBuilder
     private func controlPanel(for wall: Wall) -> some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -199,27 +278,31 @@ struct WallDetailView: View {
                 } label: {
                     Label(holdDetectionButtonTitle(for: wall), systemImage: "sparkles")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(WallToolButtonStyle(tone: .primary))
                 .disabled(isDetectingHolds || isFittingHold || isEditingWallArea)
 
-                Button(isEditingHolds ? "Done Editing" : "Edit Holds") {
+                Button {
                     withAnimation {
                         isEditingHolds.toggle()
                         if !isEditingHolds {
                             selectedEditableHoldID = nil
                         }
                     }
+                } label: {
+                    Label(isEditingHolds ? "Done Editing" : "Edit Holds", systemImage: "pencil")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(WallToolButtonStyle(tone: .neutral))
                 .disabled(isDetectingHolds || isFittingHold || isEditingWallArea)
             }
 
             if isEditingWallArea {
                 VStack(alignment: .leading, spacing: 10) {
-                    Button("Save Wall Area") {
+                    Button {
                         saveWallArea()
+                    } label: {
+                        Label("Save Wall Area", systemImage: "checkmark")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(WallToolButtonStyle(tone: .primary))
                     .disabled(draftWallAreaPoints.count < 3)
 
                     HStack(spacing: 10) {
@@ -228,21 +311,25 @@ struct WallDetailView: View {
                         } label: {
                             Label("Undo Point", systemImage: "arrow.uturn.backward")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(WallToolButtonStyle(tone: .neutral))
                         .disabled(draftWallAreaPoints.isEmpty)
 
-                        Button("Cancel") {
+                        Button {
                             cancelWallAreaEditing()
+                        } label: {
+                            Label("Cancel", systemImage: "xmark")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(WallToolButtonStyle(tone: .neutral))
                     }
                 }
             } else {
                 HStack(spacing: 10) {
-                    Button("Set Wall Area") {
+                    Button {
                         startWallAreaEditing(from: wall)
+                    } label: {
+                        Label("Set Wall Area", systemImage: "crop")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(WallToolButtonStyle(tone: .neutral))
                     .disabled(isDetectingHolds || isFittingHold || isEditingHolds)
 
                     if !wall.wallEdges.isEmpty {
@@ -251,7 +338,7 @@ struct WallDetailView: View {
                         } label: {
                             Label("Clear Wall Area", systemImage: "trash")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(WallToolButtonStyle(tone: .destructive))
                         .disabled(isDetectingHolds || isFittingHold || isEditingHolds)
                     }
                 }
@@ -260,11 +347,11 @@ struct WallDetailView: View {
             if isEditingWallArea {
                 Text("Tap directly on the wall edge corners in order. Boundary holds get a small detection margin.")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.72))
             } else if !wall.wallEdges.isEmpty {
                 Text("Wall area active: hold detection is filtered to the marked polygon.")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.72))
             }
 
             if isEditingHolds {
@@ -275,11 +362,11 @@ struct WallDetailView: View {
                         Text("Fitting hold...")
                             .font(.footnote.weight(.semibold))
                     }
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.72))
                 } else {
                     Text("Tap an unmarked hold to auto-fit a box. Tap a marked box to select it. Use the corner controls to delete, move, or resize.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.white.opacity(0.72))
                 }
 
                 if !wall.holds.isEmpty {
@@ -288,14 +375,34 @@ struct WallDetailView: View {
                     } label: {
                         Label("Delete All Holds", systemImage: "trash")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(WallToolButtonStyle(tone: .destructive))
                     .disabled(isFittingHold)
                 }
             }
 
             Text("\(wall.holds.count) holds marked")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.white.opacity(0.76))
+
+            Button {
+                isShowingBoulderImport = true
+            } label: {
+                Label("Import From Other Walls", systemImage: "square.and.arrow.down")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .buttonStyle(WallToolButtonStyle(tone: .neutral))
+            .disabled(wall.holds.isEmpty)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(Color.white.opacity(0.055))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
         }
     }
 
@@ -311,6 +418,82 @@ struct WallDetailView: View {
                 errorMessage = error.localizedDescription
             }
             isDetectingHolds = false
+        }
+    }
+
+    @ViewBuilder
+    private func setPicker(for wall: Wall) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Set")
+                .font(.headline)
+
+            Picker("Set", selection: Binding(
+                get: { wall.activeSetID },
+                set: { activateSet($0) }
+            )) {
+                ForEach(wall.sets) { set in
+                    Text(set.name).tag(set.id)
+                }
+            }
+            .pickerStyle(.menu)
+
+            Text("\(wall.activeSetName) • \(wall.holds.count) holds • \(wall.boulders.count) problems")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func activateSet(_ setID: UUID) {
+        Task {
+            do {
+                try await store.activateWallSet(wallID: wallID, setID: setID)
+                selectedEditableHoldID = nil
+                previewBoulder = nil
+                editingBoulder = nil
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func toggleWallTools() {
+        withAnimation {
+            if isShowingWallTools {
+                if isEditingWallArea {
+                    isEditingWallArea = false
+                    draftWallAreaPoints = []
+                }
+                isEditingHolds = false
+                selectedEditableHoldID = nil
+            }
+
+            isShowingWallTools.toggle()
+        }
+    }
+
+    private func saveWallName(currentName: String) {
+        let trimmedName = draftWallName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            draftWallName = currentName
+            return
+        }
+        guard trimmedName != currentName else {
+            draftWallName = trimmedName
+            return
+        }
+
+        Task {
+            do {
+                try await store.updateWallName(wallID: wallID, name: trimmedName)
+                await MainActor.run {
+                    draftWallName = trimmedName
+                }
+            } catch {
+                await MainActor.run {
+                    draftWallName = currentName
+                    errorMessage = error.localizedDescription
+                }
+            }
         }
     }
 
@@ -484,6 +667,203 @@ struct WallDetailView: View {
 
 }
 
+private struct WallToolButtonStyle: ButtonStyle {
+    enum Tone {
+        case primary
+        case neutral
+        case destructive
+    }
+
+    @Environment(\.isEnabled) private var isEnabled
+
+    let tone: Tone
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.78)
+            .foregroundStyle(foregroundColor)
+            .padding(.horizontal, 16)
+            .frame(height: 46)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(backgroundColor)
+            )
+            .overlay {
+                Capsule(style: .continuous)
+                    .stroke(borderColor, lineWidth: 1)
+            }
+            .shadow(color: shadowColor, radius: isEnabled ? 10 : 0, x: 0, y: 5)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.86 : 1)
+            .animation(.spring(response: 0.22, dampingFraction: 0.78), value: configuration.isPressed)
+    }
+
+    private var foregroundColor: Color {
+        guard isEnabled else {
+            return .white.opacity(0.6)
+        }
+
+        switch tone {
+        case .primary:
+            return .white
+        case .neutral:
+            return .white.opacity(0.9)
+        case .destructive:
+            return Color(red: 1, green: 0.34, blue: 0.34)
+        }
+    }
+
+    private var backgroundColor: Color {
+        guard isEnabled else {
+            return .white.opacity(0.095)
+        }
+
+        switch tone {
+        case .primary:
+            return Color(red: 0.20, green: 0.44, blue: 0.28)
+        case .neutral:
+            return .white.opacity(0.105)
+        case .destructive:
+            return Color(red: 0.22, green: 0.05, blue: 0.06)
+        }
+    }
+
+    private var borderColor: Color {
+        guard isEnabled else {
+            return .white.opacity(0.1)
+        }
+
+        switch tone {
+        case .primary:
+            return Color(red: 0.45, green: 0.78, blue: 0.54).opacity(0.32)
+        case .neutral:
+            return .white.opacity(0.11)
+        case .destructive:
+            return Color(red: 1, green: 0.34, blue: 0.34).opacity(0.28)
+        }
+    }
+
+    private var shadowColor: Color {
+        guard isEnabled else {
+            return .clear
+        }
+
+        switch tone {
+        case .primary:
+            return Color(red: 0.10, green: 0.35, blue: 0.18).opacity(0.35)
+        case .neutral:
+            return .black.opacity(0.16)
+        case .destructive:
+            return Color(red: 0.36, green: 0, blue: 0).opacity(0.28)
+        }
+    }
+}
+
+private struct CreateWallSetSheet: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+
+    let wallID: UUID
+
+    @State private var setName = ""
+    @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var selectedImageData: Data?
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Set name", text: $setName)
+
+                    PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                        Label(selectedImageData == nil ? "Choose Wall Photo" : "Change Wall Photo", systemImage: "photo")
+                    }
+                } footer: {
+                    Text("Create a new set when the same physical wall gets reset with different holds.")
+                }
+
+                if let selectedImageData, let image = UIImage(data: selectedImageData) {
+                    Section {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: .infinity)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                }
+
+                if let errorMessage {
+                    Section {
+                        Text(errorMessage)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle("New Reset")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                    .disabled(isSaving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(isSaving ? "Saving..." : "Save") {
+                        save()
+                    }
+                    .disabled(!canSave)
+                }
+            }
+            .onChange(of: selectedPhotoItem) { _, item in
+                loadPhoto(item)
+            }
+        }
+    }
+
+    private var canSave: Bool {
+        !isSaving
+            && !setName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && selectedImageData != nil
+    }
+
+    private func loadPhoto(_ item: PhotosPickerItem?) {
+        guard let item else {
+            selectedImageData = nil
+            return
+        }
+
+        Task {
+            do {
+                selectedImageData = try await item.loadTransferable(type: Data.self)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func save() {
+        guard let selectedImageData else {
+            return
+        }
+
+        isSaving = true
+        Task {
+            do {
+                try await store.createWallSet(wallID: wallID, name: setName, imageData: selectedImageData)
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+                isSaving = false
+            }
+        }
+    }
+}
+
 private struct BoulderRow: View {
     let boulder: Boulder
     let onSelect: () -> Void
@@ -558,14 +938,20 @@ private struct BoulderImportSheet: View {
                     ContentUnavailableView(
                         "No Importable Problems",
                         systemImage: "square.and.arrow.down",
-                        description: Text("Mark holds on this wall and keep older walls with saved problems to import from.")
+                        description: Text("Mark holds on this set, then import saved problems from another wall or set.")
                     )
                 } else {
                     List {
                         Section {
-                            Text(summaryText(for: effectiveCandidates))
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(workflowText(for: effectiveCandidates))
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+
+                                Text("Main actions: select good matches, compare and edit partial matches, then import.")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
 
                         ForEach(groups(from: effectiveCandidates)) { group in
@@ -665,9 +1051,12 @@ private struct BoulderImportSheet: View {
         return BoulderImportCandidate(
             id: candidate.id,
             sourceWallID: candidate.sourceWallID,
+            sourceWallSetID: candidate.sourceWallSetID,
             sourceWallName: candidate.sourceWallName,
+            sourceSetName: candidate.sourceSetName,
             sourceBoulder: candidate.sourceBoulder,
             matchedHoldIDs: uniqueHoldIDs,
+            matchedSecondaryHoldIDs: candidate.matchedSecondaryHoldIDs.filter { uniqueHoldIDs.contains($0) },
             missingHoldCount: max(0, candidate.totalHoldCount - uniqueHoldIDs.count),
             totalHoldCount: candidate.totalHoldCount
         )
@@ -712,16 +1101,16 @@ private struct BoulderImportSheet: View {
         }
     }
 
-    private func summaryText(for candidates: [BoulderImportCandidate]) -> String {
+    private func workflowText(for candidates: [BoulderImportCandidate]) -> String {
         let completeCount = candidates.filter(\.isComplete).count
         let partialCount = candidates.count - completeCount
-        let completeText = completeCount == 1 ? "1 problem can be imported completely" : "\(completeCount) problems can be imported completely"
-        let partialText = partialCount == 1 ? "1 problem has missing or changed holds" : "\(partialCount) problems have missing or changed holds"
-        return "\(completeText). \(partialText). Partial imports keep only the matched holds."
+        let completeText = completeCount == 1 ? "1 full match" : "\(completeCount) full matches"
+        let partialText = partialCount == 1 ? "1 partial match" : "\(partialCount) partial matches"
+        return "SendLog matches each saved hold to the closest hold on this set using position and color. \(completeText); \(partialText). Partial imports keep the matched holds you approve."
     }
 
     private func groups(from candidates: [BoulderImportCandidate]) -> [BoulderImportGroup] {
-        let grouped = Dictionary(grouping: candidates, by: \.sourceWallID)
+        let grouped = Dictionary(grouping: candidates, by: { "\($0.sourceWallID.uuidString)-\($0.sourceWallSetID.uuidString)" })
         return grouped.values
             .compactMap { candidates in
                 guard let first = candidates.first else {
@@ -739,9 +1128,9 @@ private struct BoulderImportSheet: View {
                 let completeCount = sorted.filter(\.isComplete).count
                 let partialCount = sorted.count - completeCount
                 return BoulderImportGroup(
-                    sourceWallID: first.sourceWallID,
-                    title: first.sourceWallName,
-                    footer: "\(completeCount) complete, \(partialCount) missing or changed.",
+                    sourceID: "\(first.sourceWallID.uuidString)-\(first.sourceWallSetID.uuidString)",
+                    title: "\(first.sourceWallName) / \(first.sourceSetName)",
+                    footer: "\(completeCount) full matches, \(partialCount) partial.",
                     candidates: sorted
                 )
             }
@@ -752,13 +1141,13 @@ private struct BoulderImportSheet: View {
 }
 
 private struct BoulderImportGroup: Identifiable {
-    let sourceWallID: UUID
+    let sourceID: String
     let title: String
     let footer: String
     let candidates: [BoulderImportCandidate]
 
-    var id: UUID {
-        sourceWallID
+    var id: String {
+        sourceID
     }
 }
 
@@ -821,10 +1210,10 @@ private struct BoulderImportCandidateRow: View {
 
     private var statusText: String {
         if candidate.isComplete {
-            return "All \(candidate.totalHoldCount) holds present"
+            return "Full match: \(candidate.totalHoldCount)/\(candidate.totalHoldCount) holds"
         }
         let missing = candidate.missingHoldCount == 1 ? "1 missing/changed hold" : "\(candidate.missingHoldCount) missing/changed holds"
-        return "\(candidate.matchedHoldCount)/\(candidate.totalHoldCount) holds matched, \(missing)"
+        return "Partial match: \(candidate.matchedHoldCount)/\(candidate.totalHoldCount) holds, \(missing)"
     }
 }
 
@@ -848,9 +1237,9 @@ private struct BoulderImportCompareEditSheet: View {
     var body: some View {
         NavigationStack {
             Group {
-                if let sourceWall,
+                if let sourceSet,
                    let targetWall,
-                   let sourceImage = store.image(for: sourceWall),
+                   let sourceImage = store.image(for: sourceSet),
                    let targetImage = store.image(for: targetWall) {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
@@ -861,9 +1250,10 @@ private struct BoulderImportCompareEditSheet: View {
                                     .font(.headline)
                                 WallCanvasView(
                                     image: sourceImage,
-                                    holds: sourceWall.holds,
-                                    selectedHoldIDs: Set(candidate.sourceBoulder.holdIDs),
-                                    wallEdges: sourceWall.wallEdges,
+                                    holds: sourceSet.holds,
+                                    selectedHoldIDs: Set(candidate.sourceBoulder.holdIDs).subtracting(candidate.sourceBoulder.secondaryHoldIDs),
+                                    wallEdges: sourceSet.wallEdges,
+                                    secondarySelectedHoldIDs: Set(candidate.sourceBoulder.secondaryHoldIDs),
                                     showsInactiveHolds: false,
                                     onHoldTap: nil,
                                     onEmptyImageTap: nil,
@@ -875,7 +1265,7 @@ private struct BoulderImportCompareEditSheet: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 Label("Current wall", systemImage: "2.circle")
                                     .font(.headline)
-                                Text("Tap holds to add or remove them from this imported problem.")
+                                Text("Approve the matched holds, or tap holds to adjust this problem before importing.")
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
 
@@ -884,6 +1274,7 @@ private struct BoulderImportCompareEditSheet: View {
                                     holds: targetWall.holds,
                                     selectedHoldIDs: selectedTargetHoldIDs,
                                     wallEdges: targetWall.wallEdges,
+                                    secondarySelectedHoldIDs: Set(candidate.matchedSecondaryHoldIDs),
                                     showsInactiveHolds: true,
                                     onHoldTap: { hold in
                                         toggle(hold)
@@ -944,6 +1335,10 @@ private struct BoulderImportCompareEditSheet: View {
         store.wall(withID: candidate.sourceWallID)
     }
 
+    private var sourceSet: WallSet? {
+        sourceWall?.sets.first { $0.id == candidate.sourceWallSetID }
+    }
+
     private var targetWall: Wall? {
         store.wall(withID: wallID)
     }
@@ -980,6 +1375,7 @@ struct BoulderPreviewSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let wallID: UUID
+    let wallSetID: UUID?
     let image: UIImage
     @State private var currentBoulderID: UUID
     @State private var wallCanvasZoomScale: CGFloat = 1
@@ -993,8 +1389,9 @@ struct BoulderPreviewSheet: View {
 
     private let restTimerTicker = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
 
-    init(wallID: UUID, image: UIImage, initialBoulderID: UUID) {
+    init(wallID: UUID, wallSetID: UUID? = nil, image: UIImage, initialBoulderID: UUID) {
         self.wallID = wallID
+        self.wallSetID = wallSetID
         self.image = image
         _currentBoulderID = State(initialValue: initialBoulderID)
     }
@@ -1002,14 +1399,15 @@ struct BoulderPreviewSheet: View {
     var body: some View {
         NavigationStack {
             Group {
-                if let wall = currentWall, let boulder = currentBoulder {
+                if let wall = currentSet, let boulder = currentBoulder {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
                             WallCanvasView(
                                 image: image,
                                 holds: wall.holds,
-                                selectedHoldIDs: Set(boulder.holdIDs),
+                                selectedHoldIDs: Set(boulder.holdIDs).subtracting(boulder.secondaryHoldIDs),
                                 wallEdges: wall.wallEdges,
+                                secondarySelectedHoldIDs: Set(boulder.secondaryHoldIDs),
                                 showsInactiveHolds: false,
                                 onHoldTap: nil,
                                 onEmptyImageTap: nil,
@@ -1144,8 +1542,18 @@ struct BoulderPreviewSheet: View {
         store.wall(withID: wallID)
     }
 
+    private var currentSet: WallSet? {
+        guard let wall = currentWall else {
+            return nil
+        }
+        if let wallSetID {
+            return wall.sets.first { $0.id == wallSetID }
+        }
+        return wall.activeSet
+    }
+
     private var orderedBoulders: [Boulder] {
-        currentWall?.boulders ?? []
+        currentSet?.boulders ?? []
     }
 
     private var currentBoulder: Boulder? {

@@ -79,6 +79,35 @@ struct OfflineHoldDetectionService {
         var maxDimension: CGFloat
     }
 
+    private struct DetectionProfile {
+        var modelConfidenceThreshold: Float
+        var minInsideRatio: Float
+        var minFillRatio: Float
+        var minPeakScore: Float
+        var candidateLimit: Int
+        var minAreaScale: CGFloat
+        var minPerimeterScale: CGFloat
+        var minDimensionScale: CGFloat
+
+        static func profile(for targetCount: Int, aggressiveness: Int) -> DetectionProfile {
+            let extraDetectionRatio = Float(min(max(targetCount - 92, 0), 88)) / 88
+            let aggressivenessRatio = Float(min(max(aggressiveness, 0), 2)) / 2
+            let deepDetectionRatio = (Float(min(max(targetCount - 180, 0), 180)) / 180) * aggressivenessRatio
+            let deepSizeRelaxation = CGFloat(deepDetectionRatio)
+
+            return DetectionProfile(
+                modelConfidenceThreshold: 0.22 - (0.12 * extraDetectionRatio) - (0.035 * deepDetectionRatio),
+                minInsideRatio: 0.70 - (0.16 * extraDetectionRatio) - (0.08 * deepDetectionRatio),
+                minFillRatio: 0.055 - (0.030 * extraDetectionRatio) - (0.007 * deepDetectionRatio),
+                minPeakScore: 0.10 - (0.060 * extraDetectionRatio) - (0.015 * deepDetectionRatio),
+                candidateLimit: targetCount > 180 ? (aggressiveness > 0 ? 3_600 : 1_800) : (targetCount > 92 ? 1_600 : 700),
+                minAreaScale: 1.0 - (0.35 * deepSizeRelaxation),
+                minPerimeterScale: 1.0 - (0.25 * deepSizeRelaxation),
+                minDimensionScale: 1.0 - (0.25 * deepSizeRelaxation)
+            )
+        }
+    }
+
     private struct InputGeometry {
         let imageRect: CGRect
 
@@ -109,15 +138,15 @@ struct OfflineHoldDetectionService {
         }
     }
 
-    func detectHolds(in image: UIImage, targetCount: Int = 92) async throws -> [Hold] {
+    func detectHolds(in image: UIImage, targetCount: Int = 92, aggressiveness: Int = 0) async throws -> [Hold] {
         try await Task.detached(priority: .userInitiated) {
-            try Self.detectHoldsSynchronously(in: image, targetCount: targetCount)
+            try Self.detectHoldsSynchronously(in: image, targetCount: targetCount, aggressiveness: aggressiveness)
         }.value
     }
 
     func detectHoldsAndWallEdges(in image: UIImage, targetCount: Int = 92) async throws -> DetectionResult {
         try await Task.detached(priority: .userInitiated) {
-            let holds = try Self.detectHoldsSynchronously(in: image, targetCount: targetCount)
+            let holds = try Self.detectHoldsSynchronously(in: image, targetCount: targetCount, aggressiveness: 0)
             let wallEdges = Self.estimatedWallEdges(from: holds)
             return DetectionResult(holds: holds, wallEdges: wallEdges)
         }.value
@@ -129,9 +158,14 @@ struct OfflineHoldDetectionService {
         }.value
     }
 
-    private static func detectHoldsSynchronously(in image: UIImage, targetCount: Int) throws -> [Hold] {
+    private static func detectHoldsSynchronously(in image: UIImage, targetCount: Int, aggressiveness: Int) throws -> [Hold] {
         let geometry = inputGeometry(for: image, size: inputSize)
-        let candidates = try candidatesSynchronously(in: image, geometry: geometry)
+        let candidates = try candidatesSynchronously(
+            in: image,
+            geometry: geometry,
+            targetCount: targetCount,
+            aggressiveness: aggressiveness
+        )
         let selected = selectCandidates(candidates, targetCount: targetCount)
         return selected.compactMap { candidate in
             hold(from: candidate, geometry: geometry)
@@ -145,7 +179,7 @@ struct OfflineHoldDetectionService {
         )
         let geometry = inputGeometry(for: image, size: inputSize)
         let displayPoint = geometry.modelPoint(fromNormalizedPoint: point)
-        let candidates = try candidatesSynchronously(in: image, geometry: geometry)
+        let candidates = try candidatesSynchronously(in: image, geometry: geometry, targetCount: 180, aggressiveness: 0)
         guard let candidate = candidate(atDisplayPoint: displayPoint, in: candidates) else {
             return nil
         }
@@ -253,7 +287,12 @@ struct OfflineHoldDetectionService {
         return sorted[lowerIndex] + ((sorted[upperIndex] - sorted[lowerIndex]) * fraction)
     }
 
-    private static func candidatesSynchronously(in image: UIImage, geometry: InputGeometry) throws -> [Candidate] {
+    private static func candidatesSynchronously(
+        in image: UIImage,
+        geometry: InputGeometry,
+        targetCount: Int,
+        aggressiveness: Int
+    ) throws -> [Candidate] {
         guard let pixelBuffer = pixelBuffer(from: image, size: inputSize, imageRect: geometry.imageRect) else {
             throw DetectionError.imagePreparationFailed
         }
@@ -261,6 +300,7 @@ struct OfflineHoldDetectionService {
             throw DetectionError.imagePreparationFailed
         }
         let sizeConstraints = sizeConstraints()
+        let profile = DetectionProfile.profile(for: targetCount, aggressiveness: aggressiveness)
 
         let model = try loadModel()
         let input = try MLDictionaryFeatureProvider(dictionary: [
@@ -273,12 +313,21 @@ struct OfflineHoldDetectionService {
             throw DetectionError.invalidModelOutput
         }
 
-        return decodeCandidates(
+        var candidates = decodeCandidates(
             from: predictions,
             prototypes: prototypes,
             scoreMap: scoreMap,
-            sizeConstraints: sizeConstraints
+            sizeConstraints: sizeConstraints,
+            profile: profile
         )
+        if targetCount > 180, aggressiveness > 0 {
+            candidates.append(contentsOf: textureSeedCandidates(
+                from: scoreMap,
+                targetCount: targetCount,
+                aggressiveness: aggressiveness
+            ))
+        }
+        return candidates
     }
 
     private static func loadModel() throws -> MLModel {
@@ -509,7 +558,8 @@ struct OfflineHoldDetectionService {
         from predictions: MLMultiArray,
         prototypes: MLMultiArray,
         scoreMap: ScoreMap,
-        sizeConstraints: SizeConstraints
+        sizeConstraints: SizeConstraints,
+        profile: DetectionProfile
     ) -> [Candidate] {
         let channelCount = predictions.shape[1].intValue
         let candidateCount = predictions.shape[2].intValue
@@ -530,7 +580,7 @@ struct OfflineHoldDetectionService {
 
         for index in 0..<candidateCount {
             let confidence = value(channel: 4, candidate: index)
-            guard confidence >= 0.22 else {
+            guard confidence >= profile.modelConfidenceThreshold else {
                 continue
             }
 
@@ -565,7 +615,8 @@ struct OfflineHoldDetectionService {
                 for: candidate,
                 prototypes: prototypes,
                 scoreMap: scoreMap,
-                sizeConstraints: sizeConstraints
+                sizeConstraints: sizeConstraints,
+                profile: profile
             ) else {
                 continue
             }
@@ -579,7 +630,7 @@ struct OfflineHoldDetectionService {
 
         return candidates
             .sorted { $0.holdScore > $1.holdScore }
-            .prefix(700)
+            .prefix(profile.candidateLimit)
             .map { $0 }
     }
 
@@ -626,6 +677,105 @@ struct OfflineHoldDetectionService {
             .sorted { $0.holdScore > $1.holdScore }
             .prefix(targetCount)
             .sorted { sortTopToBottom($0, $1) }
+    }
+
+    private static func textureSeedCandidates(
+        from scoreMap: ScoreMap,
+        targetCount: Int,
+        aggressiveness: Int
+    ) -> [Candidate] {
+        let aggressivenessRatio = Float(min(max(aggressiveness, 1), 2)) / 2
+        let deepDetectionRatio = (Float(min(max(targetCount - 180, 0), 180)) / 180) * aggressivenessRatio
+        let threshold = 0.64 - (0.10 * deepDetectionRatio)
+        let suppressionRadius = 4
+        let scale = CGFloat(inputSize) / CGFloat(protoSize)
+        let maximumCount = min(max(targetCount - 180, 0) * (aggressiveness >= 2 ? 4 : 2), aggressiveness >= 2 ? 520 : 220)
+
+        var peaks: [(x: Int, y: Int, score: Float)] = []
+        peaks.reserveCapacity(maximumCount)
+
+        for y in 2..<(protoSize - 2) {
+            for x in 2..<(protoSize - 2) {
+                guard scoreMap.isWall(x: x, y: y) else {
+                    continue
+                }
+
+                let score = scoreMap.score(x: x, y: y)
+                guard score >= threshold else {
+                    continue
+                }
+
+                var isLocalMaximum = true
+                for neighborY in (y - 2)...(y + 2) where isLocalMaximum {
+                    for neighborX in (x - 2)...(x + 2) {
+                        if neighborX == x, neighborY == y {
+                            continue
+                        }
+                        if scoreMap.score(x: neighborX, y: neighborY) > score {
+                            isLocalMaximum = false
+                            break
+                        }
+                    }
+                }
+                guard isLocalMaximum else {
+                    continue
+                }
+
+                peaks.append((x, y, score))
+            }
+        }
+
+        var selected: [(x: Int, y: Int, score: Float)] = []
+        for peak in peaks.sorted(by: { $0.score > $1.score }) {
+            guard !selected.contains(where: { existing in
+                abs(existing.x - peak.x) <= suppressionRadius && abs(existing.y - peak.y) <= suppressionRadius
+            }) else {
+                continue
+            }
+            selected.append(peak)
+            if selected.count >= maximumCount {
+                break
+            }
+        }
+
+        return selected.map { peak in
+            let localScore = averageScore(aroundX: peak.x, y: peak.y, radius: 2, in: scoreMap)
+            let normalizedScore = min(1, (peak.score * 0.68) + (localScore * 0.32))
+            let width = CGFloat(4 + min(4, max(2, Int(round(normalizedScore * 5))))) * scale
+            let height = CGFloat(4 + min(4, max(2, Int(round(normalizedScore * 5))))) * scale
+            let centerX = (CGFloat(peak.x) + 0.5) * scale
+            let centerY = (CGFloat(peak.y) + 0.5) * scale
+            let rect = CGRect(
+                x: max(0, centerX - (width / 2)),
+                y: max(0, centerY - (height / 2)),
+                width: min(CGFloat(inputSize), width),
+                height: min(CGFloat(inputSize), height)
+            ).intersection(CGRect(x: 0, y: 0, width: inputSize, height: inputSize))
+
+            return Candidate(
+                rect: rect,
+                confidence: normalizedScore,
+                coefficients: [],
+                holdScore: 0.34 + (normalizedScore * 0.26)
+            )
+        }
+    }
+
+    private static func averageScore(aroundX x: Int, y: Int, radius: Int, in scoreMap: ScoreMap) -> Float {
+        var sum: Float = 0
+        var count: Float = 0
+
+        for localY in max(0, y - radius)...min(protoSize - 1, y + radius) {
+            for localX in max(0, x - radius)...min(protoSize - 1, x + radius) {
+                guard scoreMap.isWall(x: localX, y: localY) else {
+                    continue
+                }
+                sum += scoreMap.score(x: localX, y: localY)
+                count += 1
+            }
+        }
+
+        return count > 0 ? sum / count : 0
     }
 
     private static func candidate(atDisplayPoint point: CGPoint, in candidates: [Candidate]) -> Candidate? {
@@ -709,7 +859,8 @@ struct OfflineHoldDetectionService {
         for candidate: Candidate,
         prototypes: MLMultiArray,
         scoreMap: ScoreMap,
-        sizeConstraints: SizeConstraints
+        sizeConstraints: SizeConstraints,
+        profile: DetectionProfile
     ) -> (rect: CGRect, contour: [NormalizedPoint]?, maskPixels: Set<Int>, score: Float)? {
         let pointer = prototypes.dataPointer.bindMemory(to: Float.self, capacity: prototypes.count)
         let channelStride = prototypes.strides[1].intValue
@@ -760,7 +911,7 @@ struct OfflineHoldDetectionService {
         let count = component.indices.count
 
         let insideRatio = Float(count) / Float(max(rawCount, 1))
-        guard insideRatio >= 0.70 else {
+        guard insideRatio >= profile.minInsideRatio else {
             return nil
         }
 
@@ -783,16 +934,16 @@ struct OfflineHoldDetectionService {
         guard count >= minArea, count <= maxArea, minDimension >= 3 else {
             return nil
         }
-        guard areaPixels >= sizeConstraints.minArea,
+        guard areaPixels >= sizeConstraints.minArea * profile.minAreaScale,
               areaPixels <= sizeConstraints.maxArea,
-              perimeterPixels >= sizeConstraints.minPerimeter,
+              perimeterPixels >= sizeConstraints.minPerimeter * profile.minPerimeterScale,
               perimeterPixels <= sizeConstraints.maxPerimeter,
-              minDimension >= sizeConstraints.minMinDimension,
-              maxDimension >= sizeConstraints.minMaxDimension,
+              minDimension >= sizeConstraints.minMinDimension * profile.minDimensionScale,
+              maxDimension >= sizeConstraints.minMaxDimension * profile.minDimensionScale,
               maxDimension <= sizeConstraints.maxDimension else {
             return nil
         }
-        guard fillRatio >= 0.055 else {
+        guard fillRatio >= profile.minFillRatio else {
             return nil
         }
         guard aspectRatio <= 8.0 || fillRatio >= 0.22 else {
@@ -808,7 +959,7 @@ struct OfflineHoldDetectionService {
             scoreSum += localScore
             peakScore = max(peakScore, localScore)
         }
-        guard peakScore >= 0.10 else {
+        guard peakScore >= profile.minPeakScore else {
             return nil
         }
 

@@ -104,9 +104,11 @@ struct WallLibraryView: View {
             }
             .fullScreenCover(item: $previewTarget) { target in
                 if let wall = store.wall(withID: target.wallID),
-                   let image = store.image(for: wall) {
+                   let set = wall.sets.first(where: { $0.id == target.wallSetID }),
+                   let image = store.image(for: set) {
                     BoulderPreviewSheet(
                         wallID: target.wallID,
+                        wallSetID: target.wallSetID,
                         image: image,
                         initialBoulderID: target.boulderID
                     )
@@ -229,6 +231,7 @@ struct WallLibraryView: View {
                     Button {
                         previewTarget = BoulderPreviewTarget(
                             wallID: entry.wallID,
+                            wallSetID: entry.wallSetID,
                             boulderID: entry.boulder.id
                         )
                     } label: {
@@ -238,6 +241,11 @@ struct WallLibraryView: View {
                 }
                 .listStyle(.plain)
             }
+        } else if selectedTab == .analysis {
+            AnalysisView(
+                walls: store.walls,
+                imageForSet: { set in store.image(for: set) }
+            )
         } else {
             if allLogDateGroups.isEmpty {
                 ContentUnavailableView(
@@ -289,8 +297,16 @@ struct WallLibraryView: View {
     private var allProblems: [BoulderLibraryEntry] {
         store.walls
             .flatMap { wall in
-                wall.boulders.map { boulder in
-                    BoulderLibraryEntry(wallID: wall.id, wallName: wall.name, boulder: boulder)
+                wall.sets.flatMap { set in
+                    set.boulders.map { boulder in
+                        BoulderLibraryEntry(
+                            wallID: wall.id,
+                            wallSetID: set.id,
+                            wallName: wall.name,
+                            setName: set.name,
+                            boulder: boulder
+                        )
+                    }
                 }
             }
     }
@@ -309,6 +325,7 @@ struct WallLibraryView: View {
                     || entry.boulder.notes.localizedCaseInsensitiveContains(query)
                     || entry.boulder.grade.localizedCaseInsensitiveContains(query)
                     || entry.wallName.localizedCaseInsensitiveContains(query)
+                    || entry.setName.localizedCaseInsensitiveContains(query)
             }
 
             return gradeMatches && searchMatches
@@ -358,14 +375,18 @@ struct WallLibraryView: View {
     private var allBoulderLogEntries: [BoulderLogLibraryEntry] {
         store.walls
             .flatMap { wall in
-                wall.boulders.flatMap { boulder in
-                    boulder.logEntries.map { logEntry in
-                        BoulderLogLibraryEntry(
-                            wallID: wall.id,
-                            wallName: wall.name,
-                            boulder: boulder,
-                            logEntry: logEntry
-                        )
+                wall.sets.flatMap { set in
+                    set.boulders.flatMap { boulder in
+                        boulder.logEntries.map { logEntry in
+                            BoulderLogLibraryEntry(
+                                wallID: wall.id,
+                                wallSetID: set.id,
+                                wallName: wall.name,
+                                setName: set.name,
+                                boulder: boulder,
+                                logEntry: logEntry
+                            )
+                        }
                     }
                 }
             }
@@ -400,7 +421,9 @@ struct WallLibraryView: View {
                     .climb(
                         DailyBoulderLogSummary(
                             wallID: first.wallID,
+                            wallSetID: first.wallSetID,
                             wallName: first.wallName,
+                            setName: first.setName,
                             boulder: first.boulder,
                             recordedAt: recordedAt,
                             attempts: summaries.reduce(0) { $0 + $1.logEntry.attempts },
@@ -463,6 +486,7 @@ struct WallLibraryView: View {
                     return summary.boulder.name.localizedCaseInsensitiveContains(query)
                         || summary.boulder.grade.localizedCaseInsensitiveContains(query)
                         || summary.wallName.localizedCaseInsensitiveContains(query)
+                        || summary.setName.localizedCaseInsensitiveContains(query)
                         || itemTimestamp.localizedCaseInsensitiveContains(query)
                         || "attempts: \(summary.attempts)".localizedCaseInsensitiveContains(query)
                         || "ticks: \(summary.ticks)".localizedCaseInsensitiveContains(query)
@@ -563,6 +587,7 @@ struct WallLibraryView: View {
 private enum LibraryTab: String, CaseIterable, Identifiable {
     case walls = "Walls"
     case problems = "Problems"
+    case analysis = "Analysis"
     case logs = "Log"
 
     var id: String { rawValue }
@@ -573,6 +598,8 @@ private enum LibraryTab: String, CaseIterable, Identifiable {
             return "Search walls"
         case .problems:
             return "Search problems or wall"
+        case .analysis:
+            return "Search analysis"
         case .logs:
             return "Search dates, sessions, problems, or wall"
         }
@@ -589,7 +616,9 @@ private enum ProblemSort: String, CaseIterable, Identifiable {
 
 private struct BoulderLibraryEntry: Identifiable {
     let wallID: UUID
+    let wallSetID: UUID
     let wallName: String
+    let setName: String
     let boulder: Boulder
 
     var id: UUID { boulder.id }
@@ -597,7 +626,9 @@ private struct BoulderLibraryEntry: Identifiable {
 
 private struct BoulderLogLibraryEntry: Identifiable {
     let wallID: UUID
+    let wallSetID: UUID
     let wallName: String
+    let setName: String
     let boulder: Boulder
     let logEntry: BoulderLogEntry
 
@@ -606,7 +637,9 @@ private struct BoulderLogLibraryEntry: Identifiable {
 
 private struct DailyBoulderLogSummary: Identifiable {
     let wallID: UUID
+    let wallSetID: UUID
     let wallName: String
+    let setName: String
     let boulder: Boulder
     let recordedAt: Date
     let attempts: Int
@@ -681,6 +714,7 @@ private struct LogDateGroup: Identifiable {
 
 private struct BoulderPreviewTarget: Identifiable {
     let wallID: UUID
+    let wallSetID: UUID
     let boulderID: UUID
 
     var id: UUID { boulderID }
@@ -718,12 +752,260 @@ private struct WallRow: View {
                 Text("\(wall.holds.count) holds • \(wall.boulders.count) problems")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                if wall.sets.count > 1 {
+                    Text("\(wall.sets.count) sets • \(wall.sets.reduce(0) { $0 + $1.boulders.count }) total problems")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Text("Updated \(wall.updatedAt, formatter: Self.dateFormatter)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+private struct AnalysisView: View {
+    let walls: [Wall]
+    let imageForSet: (WallSet) -> UIImage?
+
+    @State private var selectedWallID: UUID?
+    @State private var selectedSetID: UUID?
+
+    var body: some View {
+        Group {
+            if walls.isEmpty {
+                ContentUnavailableView(
+                    "No Walls to Analyze",
+                    systemImage: "chart.xyaxis.line",
+                    description: Text("Create a wall and add problems to see hold usage.")
+                )
+            } else if let wall = selectedWall, let set = selectedSet(for: wall) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        analysisControls(wall: wall)
+                        HoldUsageCard(wall: wall, set: set, image: imageForSet(set))
+                    }
+                    .padding(.horizontal)
+                    .padding(.bottom, 24)
+                }
+            }
+        }
+        .onAppear(perform: ensureSelection)
+        .onChange(of: walls) { _, _ in
+            ensureSelection()
+        }
+    }
+
+    private var selectedWall: Wall? {
+        if let selectedWallID,
+           let wall = walls.first(where: { $0.id == selectedWallID }) {
+            return wall
+        }
+        return walls.first
+    }
+
+    private func selectedSet(for wall: Wall) -> WallSet? {
+        if let selectedSetID,
+           let set = wall.sets.first(where: { $0.id == selectedSetID }) {
+            return set
+        }
+        return wall.sets.first(where: { $0.id == wall.activeSetID }) ?? wall.sets.first
+    }
+
+    private func analysisControls(wall: Wall) -> some View {
+        VStack(spacing: 10) {
+            Picker("Wall", selection: wallSelection) {
+                ForEach(walls) { wall in
+                    Text(wall.name).tag(Optional(wall.id))
+                }
+            }
+            .pickerStyle(.menu)
+
+            Picker("Set", selection: setSelection(for: wall)) {
+                ForEach(wall.sets) { set in
+                    Text(set.name).tag(Optional(set.id))
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+        .padding(.top, 4)
+    }
+
+    private var wallSelection: Binding<UUID?> {
+        Binding(
+            get: { selectedWall?.id },
+            set: { wallID in
+                selectedWallID = wallID
+                if let wallID, let wall = walls.first(where: { $0.id == wallID }) {
+                    selectedSetID = wall.activeSetID
+                } else {
+                    selectedSetID = nil
+                }
+            }
+        )
+    }
+
+    private func setSelection(for wall: Wall) -> Binding<UUID?> {
+        Binding(
+            get: { selectedSet(for: wall)?.id },
+            set: { selectedSetID = $0 }
+        )
+    }
+
+    private func ensureSelection() {
+        guard let wall = selectedWall else {
+            selectedWallID = nil
+            selectedSetID = nil
+            return
+        }
+
+        selectedWallID = wall.id
+        if selectedSet(for: wall) == nil {
+            selectedSetID = wall.activeSetID
+        } else {
+            selectedSetID = selectedSet(for: wall)?.id
+        }
+    }
+}
+
+private struct HoldUsageCard: View {
+    let wall: Wall
+    let set: WallSet
+    let image: UIImage?
+
+    private var usageCounts: [UUID: Int] {
+        var counts: [UUID: Int] = [:]
+        for boulder in set.boulders {
+            for holdID in Set(boulder.holdIDs) {
+                counts[holdID, default: 0] += 1
+            }
+        }
+        return counts
+    }
+
+    private var maxUsageCount: Int {
+        usageCounts.values.max() ?? 0
+    }
+
+    private var usedHoldCount: Int {
+        usageCounts.values.filter { $0 > 0 }.count
+    }
+
+    private var holdUsageIntensities: [UUID: Double] {
+        let maxCount = maxUsageCount
+        guard maxCount > 0 else {
+            return Dictionary(uniqueKeysWithValues: set.holds.map { ($0.id, 0) })
+        }
+        return Dictionary(uniqueKeysWithValues: set.holds.map { hold in
+            (hold.id, Double(usageCounts[hold.id] ?? 0) / Double(maxCount))
+        })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Hold Usage")
+                        .font(.headline)
+                    Text("\(wall.name) • \(set.name)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(maxUsageCount > 0 ? "Max \(maxUsageCount)x" : "No usage")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            if let image {
+                WallCanvasView(
+                    image: image,
+                    holds: set.holds,
+                    selectedHoldIDs: [],
+                    wallEdges: set.wallEdges,
+                    holdUsageIntensities: holdUsageIntensities,
+                    showsInactiveHolds: true,
+                    isZoomEnabled: true,
+                    focusesSelectedHolds: false,
+                    cornerRadius: 10
+                )
+            } else {
+                ContentUnavailableView(
+                    "Image Not Available",
+                    systemImage: "photo",
+                    description: Text("Could not load this set image.")
+                )
+                .frame(minHeight: 220)
+            }
+
+            HoldUsageLegend(maxUsageCount: maxUsageCount)
+
+            HStack(spacing: 10) {
+                AnalysisStatPill(title: "Problems", value: "\(set.boulders.count)")
+                AnalysisStatPill(title: "Used Holds", value: "\(usedHoldCount)/\(set.holds.count)")
+                AnalysisStatPill(title: "Unused", value: "\(max(set.holds.count - usedHoldCount, 0))")
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
+    }
+}
+
+private struct HoldUsageLegend: View {
+    let maxUsageCount: Int
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("0")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            LinearGradient(
+                colors: [
+                    Color(.systemGray3),
+                    Color(red: 0.24, green: 0.31, blue: 0.73),
+                    Color(red: 0.16, green: 0.59, blue: 0.81),
+                    Color(red: 0.21, green: 0.79, blue: 0.47),
+                    Color(red: 0.96, green: 0.83, blue: 0.20)
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(height: 8)
+            .clipShape(Capsule())
+
+            Text("\(maxUsageCount)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct AnalysisStatPill: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(.tertiarySystemBackground))
+        )
     }
 }
 
@@ -749,7 +1031,7 @@ private struct ProblemLibraryRow: View {
             Text("\(entry.boulder.holdIDs.count) holds • \(entry.boulder.attemptCount) attempts • \(entry.boulder.tickCount) ticks")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-            Text("Wall: \(entry.wallName)")
+            Text("Wall: \(entry.wallName) • Set: \(entry.setName)")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             if !entry.boulder.notes.isEmpty {
@@ -873,6 +1155,7 @@ private struct ActivityLogRow: View {
             onOpen(
                 BoulderPreviewTarget(
                     wallID: summary.wallID,
+                    wallSetID: summary.wallSetID,
                     boulderID: summary.boulder.id
                 )
             )
@@ -887,7 +1170,7 @@ private struct ActivityLogRow: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    Text(summary.wallName)
+                    Text("\(summary.wallName) • \(summary.setName)")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
