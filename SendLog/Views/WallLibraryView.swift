@@ -942,7 +942,7 @@ private struct HoldUsageCard: View {
                 .frame(minHeight: 220)
             }
 
-            HoldUsageLegend()
+            HoldUsageLegend(maxUsageCount: maxUsageCount)
 
             HStack(spacing: 10) {
                 AnalysisStatPill(title: "Problems", value: "\(set.boulders.count)")
@@ -959,18 +959,21 @@ private struct HoldUsageCard: View {
 }
 
 private struct HoldUsageLegend: View {
+    let maxUsageCount: Int
+
     var body: some View {
         HStack(spacing: 10) {
-            Text("Low")
+            Text("0")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             LinearGradient(
                 colors: [
                     Color(.systemGray3),
-                    Color(red: 0.10, green: 0.56, blue: 0.95),
-                    Color(red: 1.0, green: 0.82, blue: 0.20),
-                    Color(red: 1.0, green: 0.28, blue: 0.08)
+                    Color(red: 0.24, green: 0.31, blue: 0.73),
+                    Color(red: 0.16, green: 0.59, blue: 0.81),
+                    Color(red: 0.21, green: 0.79, blue: 0.47),
+                    Color(red: 0.96, green: 0.83, blue: 0.20)
                 ],
                 startPoint: .leading,
                 endPoint: .trailing
@@ -978,7 +981,7 @@ private struct HoldUsageLegend: View {
             .frame(height: 8)
             .clipShape(Capsule())
 
-            Text("High")
+            Text("\(maxUsageCount)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

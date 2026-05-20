@@ -59,6 +59,7 @@ struct WallCanvasView: View {
             let displayOffset = isZoomEnabled ? zoomOffset : .zero
             let editableRenderedHold = editableHold.map { renderedHold(for: $0) }
             let isFocusingSelectedHolds = shouldFocusSelectedHolds
+            let markerDrawingScale = max(displayScale, 1)
             let baseCanvas = ZStack {
                 Color.black
 
@@ -107,28 +108,39 @@ struct WallCanvasView: View {
                             let selectionColor: Color = isSecondarySelected ? .orange : .cyan
                             let rect = rendered.rect.toCGRect(in: imageFrame)
                             let path = Path(rect)
-                            let lineWidth: CGFloat = isSelected ? 2.0 : 1.4
+                            let lineWidth: CGFloat = (isSelected ? 2.0 : 1.4) / markerDrawingScale
 
                             if isSelected {
                                 drawSelectedHoldRing(
                                     in: &context,
                                     for: rendered,
                                     in: imageFrame,
-                                    color: selectionColor
+                                    color: selectionColor,
+                                    scale: markerDrawingScale
                                 )
                             } else if let usageIntensity = holdUsageIntensities[hold.id] {
                                 let usageColor = holdUsageColor(for: usageIntensity)
+                                let clampedUsage = min(max(usageIntensity, 0), 1)
+                                let usageLineWidth = (1.6 + (2.4 * clampedUsage)) / markerDrawingScale
+                                let usageFillOpacity = 0.12 + (0.30 * clampedUsage)
                                 context.drawLayer { layerContext in
-                                    layerContext.addFilter(.shadow(color: usageColor.opacity(0.72), radius: 5, x: 0, y: 0))
-                                    layerContext.stroke(path, with: .color(usageColor.opacity(0.96)), lineWidth: 2.2)
+                                    layerContext.addFilter(.shadow(color: usageColor.opacity(0.72), radius: 5 / markerDrawingScale, x: 0, y: 0))
+                                    layerContext.stroke(path, with: .color(usageColor.opacity(0.98)), lineWidth: usageLineWidth)
                                 }
-                                context.fill(path, with: .color(usageColor.opacity(0.22)))
+                                context.fill(path, with: .color(usageColor.opacity(usageFillOpacity)))
+                                if usageIntensity <= 0 {
+                                    drawUnusedHoldMark(
+                                        in: &context,
+                                        rect: rect,
+                                        scale: markerDrawingScale
+                                    )
+                                }
                             } else {
                                 context.stroke(path, with: .color(.orange.opacity(0.58)), lineWidth: lineWidth)
                             }
 
                             let center = CGPoint(x: rect.midX, y: rect.midY)
-                            let centerDotDiameter = max(7, min(rect.width, rect.height) * 0.16)
+                            let centerDotDiameter = max(7, min(rect.width, rect.height) * 0.16) / markerDrawingScale
                             let centerRect = CGRect(
                                 x: center.x - (centerDotDiameter / 2),
                                 y: center.y - (centerDotDiameter / 2),
@@ -147,11 +159,11 @@ struct WallCanvasView: View {
                             if editableHoldID == hold.id {
                                 let highlightRect = holdHighlightRect(for: rendered, in: imageFrame)
                                 context.drawLayer { layerContext in
-                                    layerContext.addFilter(.shadow(color: .white.opacity(0.8), radius: 4, x: 0, y: 0))
+                                    layerContext.addFilter(.shadow(color: .white.opacity(0.8), radius: 4 / markerDrawingScale, x: 0, y: 0))
                                     layerContext.stroke(
                                         Path(highlightRect),
                                         with: .color(.white.opacity(0.96)),
-                                        lineWidth: 1.4
+                                        lineWidth: 1.4 / markerDrawingScale
                                     )
                                 }
                             }
@@ -847,14 +859,15 @@ struct WallCanvasView: View {
         in context: inout GraphicsContext,
         for hold: Hold,
         in imageFrame: CGRect,
-        color: Color
+        color: Color,
+        scale: CGFloat
     ) {
         let focusRect = holdFocusEllipseRect(for: hold, in: imageFrame)
         let ringPath = Path(ellipseIn: focusRect)
 
         context.drawLayer { layerContext in
-            layerContext.addFilter(.shadow(color: color.opacity(0.95), radius: 10, x: 0, y: 0))
-            layerContext.stroke(ringPath, with: .color(color.opacity(0.9)), lineWidth: 3.0)
+            layerContext.addFilter(.shadow(color: color.opacity(0.95), radius: 10 / scale, x: 0, y: 0))
+            layerContext.stroke(ringPath, with: .color(color.opacity(0.9)), lineWidth: 3.0 / scale)
         }
     }
 
@@ -863,21 +876,46 @@ struct WallCanvasView: View {
         switch clamped {
         case 0:
             return Color(.systemGray3)
-        case ..<0.5:
-            let progress = clamped / 0.5
+        case ..<0.33:
+            let progress = clamped / 0.33
             return Color(
-                red: 0.10 + (0.92 * progress),
-                green: 0.56 + (0.26 * progress),
-                blue: 0.95 - (0.75 * progress)
+                red: 0.24 - (0.08 * progress),
+                green: 0.31 + (0.28 * progress),
+                blue: 0.73 + (0.08 * progress)
+            )
+        case ..<0.66:
+            let progress = (clamped - 0.33) / 0.33
+            return Color(
+                red: 0.16 + (0.05 * progress),
+                green: 0.59 + (0.20 * progress),
+                blue: 0.81 - (0.34 * progress)
             )
         default:
-            let progress = (clamped - 0.5) / 0.5
+            let progress = (clamped - 0.66) / 0.34
             return Color(
-                red: 1.0,
-                green: 0.82 - (0.54 * progress),
-                blue: 0.20 - (0.12 * progress)
+                red: 0.21 + (0.75 * progress),
+                green: 0.79 + (0.04 * progress),
+                blue: 0.47 - (0.27 * progress)
             )
         }
+    }
+
+    private func drawUnusedHoldMark(in context: inout GraphicsContext, rect: CGRect, scale: CGFloat) {
+        let inset = min(rect.width, rect.height) * 0.24
+        let markRect = rect.insetBy(dx: inset, dy: inset)
+        guard markRect.width > 2, markRect.height > 2 else {
+            return
+        }
+
+        var crossPath = Path()
+        crossPath.move(to: CGPoint(x: markRect.minX, y: markRect.minY))
+        crossPath.addLine(to: CGPoint(x: markRect.maxX, y: markRect.maxY))
+        crossPath.move(to: CGPoint(x: markRect.maxX, y: markRect.minY))
+        crossPath.addLine(to: CGPoint(x: markRect.minX, y: markRect.maxY))
+
+        let lineWidth = max(1, 1.3 / scale)
+        context.stroke(crossPath, with: .color(.white.opacity(0.86)), lineWidth: lineWidth)
+        context.stroke(Path(markRect), with: .color(.white.opacity(0.54)), lineWidth: max(0.8, 0.9 / scale))
     }
 
     private func drawGlowingMarker(
