@@ -938,7 +938,7 @@ private struct BoulderImportSheet: View {
                     ContentUnavailableView(
                         "No Importable Problems",
                         systemImage: "square.and.arrow.down",
-                        description: Text("Mark holds on this set, then import saved problems from another wall or set.")
+                        description: Text("Mark holds on this set, then import saved problems from a previous set on this wall.")
                     )
                 } else {
                     List {
@@ -1110,7 +1110,14 @@ private struct BoulderImportSheet: View {
     }
 
     private func groups(from candidates: [BoulderImportCandidate]) -> [BoulderImportGroup] {
-        let grouped = Dictionary(grouping: candidates, by: { "\($0.sourceWallID.uuidString)-\($0.sourceWallSetID.uuidString)" })
+        let groupIDByCandidate: (BoulderImportCandidate) -> String = {
+            "\($0.sourceWallID.uuidString)-\($0.sourceWallSetID.uuidString)"
+        }
+        let grouped = Dictionary(grouping: candidates, by: groupIDByCandidate)
+        let groupOrder = candidates.enumerated().reduce(into: [String: Int]()) { order, pair in
+            order[groupIDByCandidate(pair.element)] = order[groupIDByCandidate(pair.element)] ?? pair.offset
+        }
+
         return grouped.values
             .compactMap { candidates in
                 guard let first = candidates.first else {
@@ -1135,7 +1142,7 @@ private struct BoulderImportSheet: View {
                 )
             }
             .sorted { lhs, rhs in
-                lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                (groupOrder[lhs.sourceID] ?? .max) < (groupOrder[rhs.sourceID] ?? .max)
             }
     }
 }

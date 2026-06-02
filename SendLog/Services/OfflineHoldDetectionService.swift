@@ -136,6 +136,21 @@ struct OfflineHoldDetectionService {
                 height: displayRect.height / imageRect.height
             ).clamped()
         }
+
+        func normalizedPoint(fromModelPoint point: CGPoint) -> NormalizedPoint? {
+            let displayPoint = CGPoint(
+                x: point.x,
+                y: CGFloat(inputSize) - point.y
+            )
+            guard imageRect.contains(displayPoint) else {
+                return nil
+            }
+
+            return NormalizedPoint(
+                x: (displayPoint.x - imageRect.minX) / imageRect.width,
+                y: (displayPoint.y - imageRect.minY) / imageRect.height
+            ).clamped()
+        }
     }
 
     func detectHolds(in image: UIImage, targetCount: Int = 92, aggressiveness: Int = 0) async throws -> [Hold] {
@@ -850,9 +865,29 @@ struct OfflineHoldDetectionService {
 
         return Hold(
             rect: rect,
-            contour: nil,
+            contour: normalizedContour(from: candidate.contour, geometry: geometry),
             confidence: Double(candidate.holdScore)
         )
+    }
+
+    private static func normalizedContour(
+        from contour: [NormalizedPoint]?,
+        geometry: InputGeometry
+    ) -> [NormalizedPoint]? {
+        guard let contour, contour.count >= 3 else {
+            return nil
+        }
+
+        let normalized = contour.compactMap { point in
+            geometry.normalizedPoint(
+                fromModelPoint: CGPoint(
+                    x: point.x * CGFloat(inputSize),
+                    y: point.y * CGFloat(inputSize)
+                )
+            )
+        }
+
+        return normalized.count >= 3 ? normalized : nil
     }
 
     private static func maskSummary(
@@ -1113,19 +1148,78 @@ struct OfflineHoldDetectionService {
             return []
         }
 
-        let centerX = CGFloat(component.minX + component.maxX) / 2
-        let centerY = CGFloat(component.minY + component.maxY) / 2
-        let ordered = boundary.sorted { lhs, rhs in
-            atan2(CGFloat(lhs.y) - centerY, CGFloat(lhs.x) - centerX)
-                < atan2(CGFloat(rhs.y) - centerY, CGFloat(rhs.x) - centerX)
-        }
-        let decimated = decimated(ordered, maxCount: 96)
+        let hull = convexHull(
+            boundary.map { point in
+                CGPoint(x: CGFloat(point.x) + 0.5, y: CGFloat(point.y) + 0.5)
+            }
+        )
+        let smoothed = smoothedClosedContour(hull, passes: 2)
+        let decimated = decimated(smoothed, maxCount: 48)
         return decimated.map { point in
             NormalizedPoint(
-                x: (CGFloat(point.x) + 0.5) / CGFloat(protoSize),
-                y: (CGFloat(point.y) + 0.5) / CGFloat(protoSize)
+                x: point.x / CGFloat(protoSize),
+                y: point.y / CGFloat(protoSize)
             ).clamped()
         }
+    }
+
+    private static func convexHull(_ points: [CGPoint]) -> [CGPoint] {
+        let sorted = points.sorted {
+            if abs($0.x - $1.x) > 0.001 {
+                return $0.x < $1.x
+            }
+            return $0.y < $1.y
+        }
+        guard sorted.count > 3 else {
+            return sorted
+        }
+
+        func cross(_ origin: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
+            ((a.x - origin.x) * (b.y - origin.y)) - ((a.y - origin.y) * (b.x - origin.x))
+        }
+
+        var lower: [CGPoint] = []
+        for point in sorted {
+            while lower.count >= 2,
+                  cross(lower[lower.count - 2], lower[lower.count - 1], point) <= 0 {
+                lower.removeLast()
+            }
+            lower.append(point)
+        }
+
+        var upper: [CGPoint] = []
+        for point in sorted.reversed() {
+            while upper.count >= 2,
+                  cross(upper[upper.count - 2], upper[upper.count - 1], point) <= 0 {
+                upper.removeLast()
+            }
+            upper.append(point)
+        }
+
+        lower.removeLast()
+        upper.removeLast()
+        let hull = lower + upper
+        return hull.count >= 3 ? hull : sorted
+    }
+
+    private static func smoothedClosedContour(_ points: [CGPoint], passes: Int) -> [CGPoint] {
+        guard points.count >= 5, passes > 0 else {
+            return points
+        }
+
+        var smoothed = points
+        for _ in 0..<passes {
+            smoothed = smoothed.indices.map { index in
+                let previous = smoothed[(index - 1 + smoothed.count) % smoothed.count]
+                let current = smoothed[index]
+                let next = smoothed[(index + 1) % smoothed.count]
+                return CGPoint(
+                    x: (previous.x * 0.22) + (current.x * 0.56) + (next.x * 0.22),
+                    y: (previous.y * 0.22) + (current.y * 0.56) + (next.y * 0.22)
+                )
+            }
+        }
+        return smoothed
     }
 
     private static func decimated<T>(_ items: [T], maxCount: Int) -> [T] {

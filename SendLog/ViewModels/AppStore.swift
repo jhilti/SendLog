@@ -802,7 +802,12 @@ final class AppStore: ObservableObject {
         let newHold: Hold
         if let image,
            let detectedHold = try await holdDetector.detectHold(in: image, at: point) {
-            if overlappingHold(for: detectedHold, in: walls[index].holds) != nil {
+            if overlappingHold(
+                for: detectedHold,
+                in: walls[index].holds,
+                minimumSmallerOverlap: 0.72,
+                minimumUnionOverlap: 0.32
+            ) != nil {
                 newHold = manualBoxHold(at: point)
             } else {
                 newHold = detectedHold
@@ -954,51 +959,65 @@ final class AppStore: ObservableObject {
     }
 
     func boulderImportCandidates(for wallID: UUID) -> [BoulderImportCandidate] {
-        guard let targetWall = wall(withID: wallID), !targetWall.holds.isEmpty else {
+        guard let wallIndex = wallIndex(for: wallID), !walls[wallIndex].holds.isEmpty else {
             return []
         }
 
+        let targetWall = walls[wallIndex]
         let existingSignatures = Set(targetWall.boulders.map { boulderSignature(for: $0, holdIDs: $0.holdIDs) })
+        let existingNameKeys = Set(targetWall.boulders.map { normalizedBoulderName(for: $0) }.filter { !$0.isEmpty })
         let targetSet = targetWall.activeSet
         let targetColorDescriptors = colorDescriptors(for: targetSet)
-        return walls
-            .flatMap { sourceWall in
-                sourceWall.sets.flatMap { sourceSet -> [BoulderImportCandidate] in
-                    guard sourceWall.id != wallID || sourceSet.id != targetWall.activeSetID else {
-                        return []
-                    }
-
-                    let transform = bestGeometryTransform(from: sourceSet, to: targetSet)
-                    let sourceColorDescriptors = colorDescriptors(for: sourceSet)
-                    return sourceSet.boulders.compactMap { boulder in
-                        importCandidate(
-                            from: boulder,
-                            sourceWall: sourceWall,
-                            sourceSet: sourceSet,
-                            targetSet: targetSet,
-                            existingSignatures: existingSignatures,
-                            transform: transform,
-                            sourceColorDescriptors: sourceColorDescriptors,
-                            targetColorDescriptors: targetColorDescriptors
-                        )
-                    }
-                }
-            }
+        let previousSets = targetWall.sets
+            .filter { $0.id != targetWall.activeSetID && $0.createdAt < targetSet.createdAt }
             .sorted { lhs, rhs in
-                if lhs.isComplete != rhs.isComplete {
-                    return lhs.isComplete
+                if lhs.createdAt != rhs.createdAt {
+                    return lhs.createdAt > rhs.createdAt
                 }
-                if lhs.missingHoldCount != rhs.missingHoldCount {
-                    return lhs.missingHoldCount < rhs.missingHoldCount
-                }
-                if lhs.sourceWallName != rhs.sourceWallName {
-                    return lhs.sourceWallName.localizedCaseInsensitiveCompare(rhs.sourceWallName) == .orderedAscending
-                }
-                if lhs.sourceSetName != rhs.sourceSetName {
-                    return lhs.sourceSetName.localizedCaseInsensitiveCompare(rhs.sourceSetName) == .orderedAscending
-                }
-                return lhs.sourceBoulder.createdAt > rhs.sourceBoulder.createdAt
+                return lhs.updatedAt > rhs.updatedAt
             }
+
+        var candidates: [BoulderImportCandidate] = []
+        for sourceSet in previousSets {
+            let transform = bestGeometryTransform(from: sourceSet, to: targetSet)
+            let sourceColorDescriptors = colorDescriptors(for: sourceSet)
+            let setCandidates = sourceSet.boulders
+                .compactMap { boulder in
+                    importCandidate(
+                        from: boulder,
+                        sourceWall: targetWall,
+                        sourceSet: sourceSet,
+                        targetSet: targetSet,
+                        existingSignatures: existingSignatures,
+                        transform: transform,
+                        sourceColorDescriptors: sourceColorDescriptors,
+                        targetColorDescriptors: targetColorDescriptors
+                    )
+                }
+                .sorted { lhs, rhs in
+                    if lhs.isComplete != rhs.isComplete {
+                        return lhs.isComplete
+                    }
+                    if lhs.missingHoldCount != rhs.missingHoldCount {
+                        return lhs.missingHoldCount < rhs.missingHoldCount
+                    }
+                    if lhs.sourceBoulder.name != rhs.sourceBoulder.name {
+                        return lhs.sourceBoulder.name.localizedCaseInsensitiveCompare(rhs.sourceBoulder.name) == .orderedAscending
+                    }
+                    return lhs.sourceBoulder.createdAt > rhs.sourceBoulder.createdAt
+                }
+            candidates.append(contentsOf: setCandidates)
+        }
+
+        var seenNameKeys = existingNameKeys
+        return candidates.filter { candidate in
+            let nameKey = normalizedBoulderName(for: candidate.sourceBoulder)
+            guard !nameKey.isEmpty, !seenNameKeys.contains(nameKey) else {
+                return false
+            }
+            seenNameKeys.insert(nameKey)
+            return true
+        }
     }
 
     @discardableResult
@@ -1008,12 +1027,19 @@ final class AppStore: ObservableObject {
         }
 
         let targetHoldIDs = Set(walls[index].holds.map(\.id))
+        var importedNameKeys = Set(walls[index].boulders.map { normalizedBoulderName(for: $0) }.filter { !$0.isEmpty })
         let imported = candidates.compactMap { candidate -> Boulder? in
+            let nameKey = normalizedBoulderName(for: candidate.sourceBoulder)
+            guard !nameKey.isEmpty, !importedNameKeys.contains(nameKey) else {
+                return nil
+            }
+
             let holdIDs = candidate.matchedHoldIDs.filter { targetHoldIDs.contains($0) }
             guard !holdIDs.isEmpty else {
                 return nil
             }
 
+            importedNameKeys.insert(nameKey)
             return Boulder(
                 wallID: wallID,
                 wallSetID: walls[index].activeSetID,
@@ -1715,6 +1741,10 @@ final class AppStore: ObservableObject {
         ].joined(separator: "|")
     }
 
+    private func normalizedBoulderName(for boulder: Boulder) -> String {
+        boulder.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
     private func importedNotes(for candidate: BoulderImportCandidate) -> String {
         let notes = candidate.sourceBoulder.notes.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !candidate.isComplete else {
@@ -1741,7 +1771,12 @@ final class AppStore: ObservableObject {
         )
     }
 
-    private func overlappingHold(for hold: Hold, in existingHolds: [Hold]) -> Hold? {
+    private func overlappingHold(
+        for hold: Hold,
+        in existingHolds: [Hold],
+        minimumSmallerOverlap: CGFloat = 0.25,
+        minimumUnionOverlap: CGFloat = 0.12
+    ) -> Hold? {
         existingHolds
             .compactMap { existingHold -> (hold: Hold, score: CGFloat)? in
                 let overlap = hold.rect.cgRect.intersection(existingHold.rect.cgRect)
@@ -1754,7 +1789,7 @@ final class AppStore: ObservableObject {
                 let existingArea = max(existingHold.rect.width * existingHold.rect.height, 0.0001)
                 let smallerOverlap = overlapArea / min(holdArea, existingArea)
                 let unionOverlap = overlapArea / max(holdArea + existingArea - overlapArea, 0.0001)
-                guard smallerOverlap >= 0.25 || unionOverlap >= 0.12 else {
+                guard smallerOverlap >= minimumSmallerOverlap || unionOverlap >= minimumUnionOverlap else {
                     return nil
                 }
                 return (existingHold, max(smallerOverlap, unionOverlap))
@@ -1767,7 +1802,11 @@ final class AppStore: ObservableObject {
 
     private func hold(at point: CGPoint, in existingHolds: [Hold]) -> Hold? {
         existingHolds.reversed().first { hold in
-            hold.rect.cgRect.insetBy(dx: -0.004, dy: -0.004).contains(point)
+            if let contour = hold.contour, contour.count >= 3 {
+                return polygonContains(point, polygon: contour)
+                    || distanceFromPolygonEdge(to: point, polygon: contour) <= 0.0015
+            }
+            return hold.rect.cgRect.insetBy(dx: -0.001, dy: -0.001).contains(point)
         }
     }
 

@@ -69,7 +69,7 @@ struct WallCanvasView: View {
                         .scaledToFit()
                         .saturation(isFocusingSelectedHolds ? 0.58 : 1)
                         .brightness(isFocusingSelectedHolds ? -0.12 : 0)
-                        .blur(radius: isFocusingSelectedHolds ? 0.7 : 0)
+                        .blur(radius: isFocusingSelectedHolds ? 0.4 : 0)
                         .frame(width: imageFrame.width, height: imageFrame.height)
                         .position(x: imageFrame.midX, y: imageFrame.midY)
 
@@ -107,7 +107,7 @@ struct WallCanvasView: View {
                             }
                             let selectionColor: Color = isSecondarySelected ? .orange : .cyan
                             let rect = rendered.rect.toCGRect(in: imageFrame)
-                            let path = Path(rect)
+                            let path = holdPath(for: rendered, in: imageFrame)
                             let lineWidth: CGFloat = (isSelected ? 2.0 : 1.4) / markerDrawingScale
 
                             if isSelected {
@@ -137,6 +137,9 @@ struct WallCanvasView: View {
                                 }
                             } else {
                                 context.stroke(path, with: .color(.orange.opacity(0.58)), lineWidth: lineWidth)
+                                if rendered.contour != nil {
+                                    context.fill(path, with: .color(.orange.opacity(0.08)))
+                                }
                             }
 
                             let center = CGPoint(x: rect.midX, y: rect.midY)
@@ -836,7 +839,7 @@ struct WallCanvasView: View {
     private func holdFocusEllipseRect(for hold: Hold, in imageFrame: CGRect) -> CGRect {
         let baseRect = hold.rect.toCGRect(in: imageFrame)
         let center = CGPoint(x: baseRect.midX, y: baseRect.midY)
-        let diameter = max(baseRect.width, baseRect.height) + max(18, min(baseRect.width, baseRect.height) * 0.9)
+        let diameter = max(baseRect.width, baseRect.height) + max(19, min(baseRect.width, baseRect.height) * 0.92)
         return CGRect(
             x: center.x - (diameter / 2),
             y: center.y - (diameter / 2),
@@ -847,11 +850,17 @@ struct WallCanvasView: View {
 
     private func drawSelectedHoldFocusMasks(in context: inout GraphicsContext, imageFrame: CGRect) {
         for hold in holds where focusedHoldIDs.contains(hold.id) {
-            let focusRect = holdFocusEllipseRect(for: renderedHold(for: hold), in: imageFrame)
-            let outerRect = focusRect.insetBy(dx: -10, dy: -10)
+            let rendered = renderedHold(for: hold)
+            if let contourPath = contourPath(for: rendered, in: imageFrame) {
+                context.stroke(contourPath, with: .color(.white.opacity(0.68)), lineWidth: 13)
+                context.fill(contourPath, with: .color(.white))
+            } else {
+                let focusRect = holdFocusEllipseRect(for: rendered, in: imageFrame)
+                let outerRect = focusRect.insetBy(dx: -9, dy: -9)
 
-            context.fill(Path(ellipseIn: outerRect), with: .color(.white.opacity(0.28)))
-            context.fill(Path(ellipseIn: focusRect), with: .color(.white))
+                context.fill(Path(ellipseIn: outerRect), with: .color(.white.opacity(0.28)))
+                context.fill(Path(ellipseIn: focusRect), with: .color(.white))
+            }
         }
     }
 
@@ -862,12 +871,11 @@ struct WallCanvasView: View {
         color: Color,
         scale: CGFloat
     ) {
-        let focusRect = holdFocusEllipseRect(for: hold, in: imageFrame)
-        let ringPath = Path(ellipseIn: focusRect)
+        let ringPath = contourPath(for: hold, in: imageFrame) ?? Path(ellipseIn: holdFocusEllipseRect(for: hold, in: imageFrame))
 
         context.drawLayer { layerContext in
-            layerContext.addFilter(.shadow(color: color.opacity(0.95), radius: 10 / scale, x: 0, y: 0))
-            layerContext.stroke(ringPath, with: .color(color.opacity(0.9)), lineWidth: 3.0 / scale)
+            layerContext.addFilter(.shadow(color: color.opacity(0.24), radius: 3 / scale, x: 0, y: 0))
+            layerContext.stroke(ringPath, with: .color(color.opacity(0.42)), lineWidth: 0.9 / scale)
         }
     }
 
@@ -1154,7 +1162,7 @@ struct WallCanvasView: View {
     }
 
     private func nearestHold(to location: CGPoint, in imageFrame: CGRect) -> Hold? {
-        let maxDistance = max(20, min(imageFrame.width, imageFrame.height) * 0.03)
+        let maxDistance = max(10, min(imageFrame.width, imageFrame.height) * 0.018)
         let nearest = holds
             .map { hold -> (hold: Hold, distance: CGFloat) in
                 let rect = hold.rect.toCGRect(in: imageFrame)
@@ -1190,12 +1198,44 @@ struct WallCanvasView: View {
     }
 
     private func holdContains(_ hold: Hold, point: CGPoint, imageFrame: CGRect) -> Bool {
-        holdHighlightRect(for: renderedHold(for: hold), in: imageFrame).contains(point)
+        let rendered = renderedHold(for: hold)
+        if let contourPath = contourPath(for: rendered, in: imageFrame),
+           contourPath.contains(point) || strokedContourContains(point, path: contourPath, scale: max(zoomScale, 1)) {
+            return true
+        }
+        return holdTapRect(for: rendered, in: imageFrame).contains(point)
     }
 
     private func holdPath(for hold: Hold, in imageFrame: CGRect) -> Path {
+        if let contourPath = contourPath(for: hold, in: imageFrame) {
+            return contourPath
+        }
         let rect = hold.rect.toCGRect(in: imageFrame)
         return Path(rect)
+    }
+
+    private func contourPath(for hold: Hold, in imageFrame: CGRect) -> Path? {
+        guard let contour = hold.contour, contour.count >= 3 else {
+            return nil
+        }
+
+        var path = Path()
+        path.move(to: contour[0].toCGPoint(in: imageFrame))
+        for point in contour.dropFirst() {
+            path.addLine(to: point.toCGPoint(in: imageFrame))
+        }
+        path.closeSubpath()
+        return path
+    }
+
+    private func strokedContourContains(_ point: CGPoint, path: Path, scale: CGFloat) -> Bool {
+        path.strokedPath(.init(lineWidth: max(6 / scale, 2.5))).contains(point)
+    }
+
+    private func holdTapRect(for hold: Hold, in imageFrame: CGRect) -> CGRect {
+        let rect = hold.rect.toCGRect(in: imageFrame)
+        let padding = min(4, max(1.5, min(rect.width, rect.height) * 0.06))
+        return rect.insetBy(dx: -padding, dy: -padding)
     }
 
     private func clampedScale(_ scale: CGFloat) -> CGFloat {
